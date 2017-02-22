@@ -39,6 +39,8 @@ struct cipher_info {
 extern char *__progname;
 extern char *optarg;
 
+int memlimit;
+int opslimit;
 int verbose;
 
 __dead void usage(void);
@@ -49,14 +51,18 @@ static int	 encrypt(struct cipher_info *);
 static void	 kdf(uint8_t *, int, int, uint8_t *);
 static void	 print_value(char *, unsigned char *, int);
 static char	*str_hex(char *, int, void *, int);
+static void	 set_mode(int);
 
 int
 main(int argc, char *argv[])
 {
 	char ch;
+	const char *ep;
 	int dflag;
+	int mode;
 
 	dflag = 0;
+	mode = 2;
 
 	if (pledge("cpath rpath stdio tty wpath", NULL) == -1)
 		err(1, "pledge");
@@ -64,10 +70,15 @@ main(int argc, char *argv[])
 	if (sodium_init() == -1)
 		errx(1, "libsodium init failure");
 
-	while ((ch = getopt(argc, argv, "dv")) != -1) {
+	while ((ch = getopt(argc, argv, "dm:v")) != -1) {
 		switch (ch) {
 		case 'd':
 			dflag = 1;
+			break;
+		case 'm':
+			mode = strtonum(optarg, 1, 3, &ep);
+			if (ep != NULL)
+				errx(1, "mode %s", ep);
 			break;
 		case 'v':
 			verbose = 1;
@@ -83,6 +94,7 @@ main(int argc, char *argv[])
 	if (argc != 2)
 		usage();
 
+	set_mode(mode);
 	ankhnempem(argv[0], argv[1], dflag ? 0 : 1);
 
 	exit(EXIT_SUCCESS);
@@ -111,13 +123,24 @@ ankhnempem(char *infile, char *outfile, int enc)
 		err(1, "%s", outfile);
 
 	if (c->enc) {
+		if (fwrite(&opslimit, sizeof(opslimit), 1, c->fout) != 1)
+			errx(1, "error writing opslimit to %s", infile);
+		if (fwrite(&memlimit, sizeof(memlimit), 1, c->fout) != 1)
+			errx(1, "error writing memlimit to %s", infile);
 		randombytes_buf(salt, sizeof(salt));
 		if (fwrite(salt, sizeof(salt), 1, c->fout) != 1)
 			errx(1, "error writing salt to %s", infile);
 	} else {
+		if (fread(&opslimit, sizeof(opslimit), 1, c->fin) != 1)
+			errx(1, "error reading opslimit from %s", infile);
+		if (fread(&memlimit, sizeof(memlimit), 1, c->fin) != 1)
+			errx(1, "error reading memlimit from %s", infile);
 		if (fread(salt, sizeof(salt), 1, c->fin) != 1)
 			errx(1, "error reading salt from %s", infile);
 	}
+
+	if (verbose)
+		printf("opslimit = %d, memlimit = %d\n", opslimit, memlimit);
 
 	kdf(salt, 1, c->enc ? 1 : 0, c->key);
 
@@ -241,11 +264,8 @@ kdf(uint8_t *salt, int allowstdin, int confirm, uint8_t *key)
 			errx(1, "passwords don't match");
 		explicit_bzero(pass2, sizeof(pass2));
 	}
-	if (crypto_pwhash(key, crypto_secretbox_KEYBYTES,
-	    pass, strlen(pass), salt,
-	    crypto_pwhash_OPSLIMIT_INTERACTIVE,
-	    crypto_pwhash_MEMLIMIT_INTERACTIVE,
-	    crypto_pwhash_ALG_DEFAULT) == -1)
+	if (crypto_pwhash(key, crypto_secretbox_KEYBYTES, pass, strlen(pass),
+	    salt, opslimit, memlimit, crypto_pwhash_ALG_DEFAULT) == -1)
 		errx(1, "crypto_pwhash failure");
 	explicit_bzero(pass, sizeof(pass));
 }
@@ -280,4 +300,26 @@ str_hex(char *str, int size, void *data, int len)
 	}
 
 	return str;
+}
+
+static void
+set_mode(int mode)
+{
+	switch (mode) {
+	case 1:
+		opslimit = crypto_pwhash_OPSLIMIT_INTERACTIVE;
+		memlimit = crypto_pwhash_MEMLIMIT_INTERACTIVE;
+		break;
+	case 2:
+		opslimit = crypto_pwhash_OPSLIMIT_MODERATE;
+		memlimit = crypto_pwhash_MEMLIMIT_MODERATE;
+		break;
+	case 3:
+		opslimit = crypto_pwhash_OPSLIMIT_SENSITIVE;
+		memlimit = crypto_pwhash_MEMLIMIT_SENSITIVE;
+		break;
+	default:
+		errx(1, "undefined mode %d", mode);
+		break;
+	}
 }

@@ -39,8 +39,8 @@ struct cipher_info {
 extern char *__progname;
 extern char *optarg;
 
-int memlimit;
-int opslimit;
+size_t memlimit;
+unsigned long long opslimit;
 int verbose;
 
 __dead void usage(void);
@@ -140,7 +140,7 @@ ankhnempem(char *infile, char *outfile, int enc)
 	}
 
 	if (verbose)
-		printf("opslimit = %d, memlimit = %d\n", opslimit, memlimit);
+		printf("opslimit = %lld, memlimit = %ld\n", opslimit, memlimit);
 
 	kdf(salt, 1, c->enc ? 1 : 0, c->key);
 

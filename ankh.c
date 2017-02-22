@@ -36,11 +36,11 @@ struct cipher_info {
 	unsigned char key[crypto_secretbox_KEYBYTES];
 };
 
-unsigned char magic[] = {
+unsigned char ankh_id[] = {
 	0x5b, 0x71, 0x4d, 0x81, 0x91, 0x81, 0x35, 0xb1,
 	0xb2, 0xea, 0x96, 0xaa, 0x80, 0xc8, 0x92, 0x57
 };
-unsigned int magic_len = 16;
+unsigned int ankh_id_len = 16;
 
 extern char *__progname;
 extern char *optarg;
@@ -58,7 +58,7 @@ static void	 kdf(uint8_t *, int, int, uint8_t *);
 static void	 print_value(char *, unsigned char *, int);
 static char	*str_hex(char *, int, void *, int);
 static void	 set_mode(int);
-static int	 verify_magic(FILE *);
+static int	 verify_ankh_id(FILE *);
 
 int
 main(int argc, char *argv[])
@@ -130,8 +130,8 @@ ankh(char *infile, char *outfile, int enc)
 		err(1, "%s", outfile);
 
 	if (c->enc) {
-		if (fwrite(magic, magic_len, 1, c->fout) != 1)
-			errx(1, "error writing magic to %s", infile);
+		if (fwrite(ankh_id, ankh_id_len, 1, c->fout) != 1)
+			errx(1, "error writing ankh_id to %s", infile);
 		if (fwrite(&opslimit, sizeof(opslimit), 1, c->fout) != 1)
 			errx(1, "error writing opslimit to %s", infile);
 		if (fwrite(&memlimit, sizeof(memlimit), 1, c->fout) != 1)
@@ -140,7 +140,7 @@ ankh(char *infile, char *outfile, int enc)
 		if (fwrite(salt, sizeof(salt), 1, c->fout) != 1)
 			errx(1, "error writing salt to %s", infile);
 	} else {
-		verify_magic(c->fin);
+		verify_ankh_id(c->fin);
 		if (fread(&opslimit, sizeof(opslimit), 1, c->fin) != 1)
 			errx(1, "error reading opslimit from %s", infile);
 		if (fread(&memlimit, sizeof(memlimit), 1, c->fin) != 1)
@@ -190,9 +190,11 @@ decrypt(struct cipher_info *ci)
 	if ((m = malloc(mlen)) == NULL)
 		err(1, NULL);
 
-	do {
+	while (feof(ci->fin) == 0) {
 		if (fread(n, sizeof(n), 1, ci->fin) == 0)
 			errx(1, "error reading nonce");
+		if (verbose)
+			print_value("nonce", n, sizeof(n));
 		if (fread(mac, sizeof(mac), 1, ci->fin) == 0)
 			errx(1, "error reading mac");
 		if ((r = fread(c, 1, clen, ci->fin)) == 0) {
@@ -205,7 +207,7 @@ decrypt(struct cipher_info *ci)
 			errx(1, "invalid message data");
 		if (fwrite(m, r, 1, ci->fout) == 0)
 			errx(1, "failure writing to output stream");
-	} while (!feof(ci->fin));
+	}
 
 	free(c);
 	free(m);
@@ -231,21 +233,20 @@ encrypt(struct cipher_info *ci)
 	if ((m = malloc(mlen)) == NULL)
 		err(1, NULL);
 
-	do {
-		if ((r = fread(m, 1, mlen, ci->fin)) == 0) {
-			if (ferror(ci->fin))
-				errx(1, "failure reading from input stream");
-			break;
-		}
+	while ((r = fread(m, 1, mlen, ci->fin)) != 0) {
 		randombytes_buf(n, sizeof(n));
 		crypto_secretbox_detached(c, mac, m, r, n, ci->key);
 		if (fwrite(n, sizeof(n), 1, ci->fout) == 0)
 			errx(1, "error writing nonce");
+		if (verbose)
+			print_value("nonce", n, sizeof(n));
 		if (fwrite(mac, sizeof(mac), 1, ci->fout) == 0)
 			errx(1, "error writing mac");
 		if (fwrite(c, r, 1, ci->fout) == 0)
 			errx(1, "failure writing to output stream");
-	} while (1);
+	}
+	if (ferror(ci->fin))
+		errx(1, "error reading from input stream");
 
 	free(c);
 	free(m);
@@ -290,28 +291,6 @@ print_value(char *name, unsigned char *str, int size)
 	explicit_bzero(buf, sizeof(buf));
 }
 
-static char *
-str_hex(char *str, int size, void *data, int len)
-{
-	const int hexsize = 2;
-	int i;
-	unsigned char *p;
-
-	memset(str, 0, size);
-	p = data;
-	for (i = 0; i < len; i++) {
-		if (size <= hexsize) {
-			warnx("string truncation");
-			break;
-		}
-		snprintf(str, size, "%02X", p[i]);
-		size -= hexsize;
-		str += hexsize;
-	}
-
-	return str;
-}
-
 static void
 set_mode(int mode)
 {
@@ -334,17 +313,39 @@ set_mode(int mode)
 	}
 }
 
+static char *
+str_hex(char *str, int size, void *data, int len)
+{
+	const int hexsize = 2;
+	int i;
+	unsigned char *p;
+
+	memset(str, 0, size);
+	p = data;
+	for (i = 0; i < len; i++) {
+		if (size <= hexsize) {
+			warnx("string truncation");
+			break;
+		}
+		snprintf(str, size, "%02X", p[i]);
+		size -= hexsize;
+		str += hexsize;
+	}
+
+	return str;
+}
+
 static int
-verify_magic(FILE *fp)
+verify_ankh_id(FILE *fp)
 {
 	int bufsize;
 	unsigned char *buf;
 
-	bufsize = magic_len;
+	bufsize = ankh_id_len;
 	if ((buf = malloc(bufsize)) == NULL)
 		err(1, NULL);
 	if (fread(buf, bufsize, 1, fp) == 0 ||
-	    memcmp(buf, magic, bufsize) != 0)
+	    memcmp(buf, ankh_id, bufsize) != 0)
 		errx(1, "invalid file");
 	free(buf);
 

@@ -36,12 +36,6 @@ struct cipher_info {
 	unsigned char key[crypto_secretbox_KEYBYTES];
 };
 
-unsigned char ankh_id[] = {
-	0x5b, 0x71, 0x4d, 0x81, 0x91, 0x81, 0x35, 0xb1,
-	0xb2, 0xea, 0x96, 0xaa, 0x80, 0xc8, 0x92, 0x57
-};
-unsigned int ankh_id_len = 16;
-
 extern char *__progname;
 extern char *optarg;
 
@@ -58,7 +52,6 @@ static void	 kdf(uint8_t *, int, int, uint8_t *);
 static void	 print_value(char *, unsigned char *, int);
 static char	*str_hex(char *, int, void *, int);
 static void	 set_mode(int);
-static int	 verify_ankh_id(FILE *);
 
 int
 main(int argc, char *argv[])
@@ -69,7 +62,7 @@ main(int argc, char *argv[])
 	int mode;
 
 	dflag = 0;
-	mode = 2;
+	mode = 3;
 
 	if (pledge("cpath rpath stdio tty wpath", NULL) == -1)
 		err(1, "pledge");
@@ -130,21 +123,10 @@ ankh(char *infile, char *outfile, int enc)
 		err(1, "%s", outfile);
 
 	if (c->enc) {
-		if (fwrite(ankh_id, ankh_id_len, 1, c->fout) != 1)
-			errx(1, "error writing ankh_id to %s", infile);
-		if (fwrite(&opslimit, sizeof(opslimit), 1, c->fout) != 1)
-			errx(1, "error writing opslimit to %s", infile);
-		if (fwrite(&memlimit, sizeof(memlimit), 1, c->fout) != 1)
-			errx(1, "error writing memlimit to %s", infile);
 		randombytes_buf(salt, sizeof(salt));
 		if (fwrite(salt, sizeof(salt), 1, c->fout) != 1)
 			errx(1, "error writing salt to %s", infile);
 	} else {
-		verify_ankh_id(c->fin);
-		if (fread(&opslimit, sizeof(opslimit), 1, c->fin) != 1)
-			errx(1, "error reading opslimit from %s", infile);
-		if (fread(&memlimit, sizeof(memlimit), 1, c->fin) != 1)
-			errx(1, "error reading memlimit from %s", infile);
 		if (fread(salt, sizeof(salt), 1, c->fin) != 1)
 			errx(1, "error reading salt from %s", infile);
 	}
@@ -333,21 +315,4 @@ str_hex(char *str, int size, void *data, int len)
 	}
 
 	return str;
-}
-
-static int
-verify_ankh_id(FILE *fp)
-{
-	int bufsize;
-	unsigned char *buf;
-
-	bufsize = ankh_id_len;
-	if ((buf = malloc(bufsize)) == NULL)
-		err(1, NULL);
-	if (fread(buf, bufsize, 1, fp) == 0 ||
-	    memcmp(buf, ankh_id, bufsize) != 0)
-		errx(1, "invalid file");
-	free(buf);
-
-	return 0;
 }

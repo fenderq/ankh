@@ -23,7 +23,7 @@ test: ${PROG}
 	sha256 foo.bin | tee SHA256
 	tr -cd [:graph:] < /dev/random | fold -bw 20 | head -1 | tee ${secret}
 	${PROG} -m ${mode} -v foo.bin bar.bin < ${secret}
-	${PROG} -v -d bar.bin foo.bin < ${secret}
+	${PROG} -m ${mode} -v -d bar.bin foo.bin < ${secret}
 	sha256 -c SHA256
 
 .include <bsd.prog.mk>

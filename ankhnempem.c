@@ -25,8 +25,9 @@
 #include <sodium.h>
 
 #define BUFSIZE 1024 * 1024
+#define MAX_LINE 4096
 #define MAX_PASSWD 1024
-#define VERSION "1.0.1"
+#define VERSION "1.0.0"
 
 struct cipher_info {
 	FILE *fin;
@@ -46,6 +47,8 @@ static int	 ankhnempem(char *, char *, int);
 static int	 decrypt(struct cipher_info *);
 static int	 encrypt(struct cipher_info *);
 static void	 kdf(uint8_t *, int, int, uint8_t *);
+static void	 print_value(char *, unsigned char *, int);
+static char	*str_hex(char *, int, void *, int);
 
 int
 main(int argc, char *argv[])
@@ -93,41 +96,45 @@ usage(void)
 }
 
 static int
-encrypt(struct cipher_info *ci)
+ankhnempem(char *infile, char *outfile, int enc)
 {
-	int clen;
-	int mlen;
-	size_t r;
-	unsigned char *c;
-	unsigned char *m;
-	unsigned char mac[crypto_secretbox_MACBYTES];
-	unsigned char n[crypto_secretbox_NONCEBYTES];
+	struct cipher_info *c;
+	unsigned char salt[crypto_pwhash_SALTBYTES];
 
-	clen = BUFSIZE;
-	if ((c = malloc(clen)) == NULL)
+	if ((c = calloc(1, sizeof(struct cipher_info))) == NULL)
 		err(1, NULL);
-	mlen = BUFSIZE;
-	if ((m = malloc(mlen)) == NULL)
-		err(1, NULL);
+	c->enc = enc;
 
-	do {
-		if ((r = fread(m, 1, mlen, ci->fin)) == 0) {
-			if (ferror(ci->fin))
-				errx(1, "failure reading from input stream");
-			break;
-		}
-		randombytes_buf(n, sizeof(n));
-		crypto_secretbox_detached(c, mac, m, r, n, ci->key);
-		if (fwrite(n, sizeof(n), 1, ci->fout) == 0)
-			errx(1, "error writing nonce");
-		if (fwrite(mac, sizeof(mac), 1, ci->fout) == 0)
-			errx(1, "error writing mac");
-		if (fwrite(c, r, 1, ci->fout) == 0)
-			errx(1, "failure writing to output stream");
-	} while (1);
+	if ((c->fin = fopen(infile, "r")) == NULL)
+		err(1, "%s", infile);
+	if ((c->fout = fopen(outfile, "w")) == NULL)
+		err(1, "%s", outfile);
 
+	if (c->enc) {
+		randombytes_buf(salt, sizeof(salt));
+		if (fwrite(salt, sizeof(salt), 1, c->fout) != 1)
+			errx(1, "error writing salt to %s", infile);
+	} else {
+		if (fread(salt, sizeof(salt), 1, c->fin) != 1)
+			errx(1, "error reading salt from %s", infile);
+	}
+
+	kdf(salt, 1, c->enc ? 1 : 0, c->key);
+
+	if (pledge("stdio", NULL) == -1)
+		err(1, "pledge");
+
+	if (verbose) {
+		print_value("salt", salt, sizeof(salt));
+		print_value("key", c->key, sizeof(c->key));
+	}
+
+	enc ? encrypt(c) : decrypt(c);
+
+	fclose(c->fin);
+	fclose(c->fout);
+	explicit_bzero(c, sizeof(struct cipher_info));
 	free(c);
-	free(m);
 
 	return 0;
 }
@@ -174,42 +181,41 @@ decrypt(struct cipher_info *ci)
 }
 
 static int
-ankhnempem(char *infile, char *outfile, int enc)
+encrypt(struct cipher_info *ci)
 {
-	struct cipher_info *c;
-	unsigned char salt[crypto_pwhash_SALTBYTES];
+	int clen;
+	int mlen;
+	size_t r;
+	unsigned char *c;
+	unsigned char *m;
+	unsigned char mac[crypto_secretbox_MACBYTES];
+	unsigned char n[crypto_secretbox_NONCEBYTES];
 
-	if ((c = calloc(1, sizeof(struct cipher_info))) == NULL)
+	clen = BUFSIZE;
+	if ((c = malloc(clen)) == NULL)
 		err(1, NULL);
-	c->enc = enc;
+	mlen = BUFSIZE;
+	if ((m = malloc(mlen)) == NULL)
+		err(1, NULL);
 
-	if ((c->fin = fopen(infile, "r")) == NULL)
-		err(1, "%s", infile);
-	if ((c->fout = fopen(outfile, "w")) == NULL)
-		err(1, "%s", outfile);
+	do {
+		if ((r = fread(m, 1, mlen, ci->fin)) == 0) {
+			if (ferror(ci->fin))
+				errx(1, "failure reading from input stream");
+			break;
+		}
+		randombytes_buf(n, sizeof(n));
+		crypto_secretbox_detached(c, mac, m, r, n, ci->key);
+		if (fwrite(n, sizeof(n), 1, ci->fout) == 0)
+			errx(1, "error writing nonce");
+		if (fwrite(mac, sizeof(mac), 1, ci->fout) == 0)
+			errx(1, "error writing mac");
+		if (fwrite(c, r, 1, ci->fout) == 0)
+			errx(1, "failure writing to output stream");
+	} while (1);
 
-	if (c->enc) {
-		randombytes_buf(salt, sizeof(salt));
-		if (fwrite(salt, sizeof(salt), 1, c->fout) != 1)
-			errx(1, "error writing salt to %s", infile);
-	} else {
-		if (fread(salt, sizeof(salt), 1, c->fin) != 1)
-			errx(1, "error reading salt from %s", infile);
-	}
-
-	kdf(salt, 1, c->enc ? 1 : 0, c->key);
-
-	if (pledge("stdio", NULL) == -1)
-		err(1, "pledge");
-
-	if (verbose)
-		printf("%scrypting ...\n", enc ? "en" : "de");
-	enc ? encrypt(c) : decrypt(c);
-
-	fclose(c->fin);
-	fclose(c->fout);
-	explicit_bzero(c, sizeof(struct cipher_info));
 	free(c);
+	free(m);
 
 	return 0;
 }
@@ -235,8 +241,6 @@ kdf(uint8_t *salt, int allowstdin, int confirm, uint8_t *key)
 			errx(1, "passwords don't match");
 		explicit_bzero(pass2, sizeof(pass2));
 	}
-	if (verbose)
-		printf("generating key ...\n");
 	if (crypto_pwhash(key, crypto_secretbox_KEYBYTES,
 	    pass, strlen(pass), salt,
 	    crypto_pwhash_OPSLIMIT_INTERACTIVE,
@@ -244,4 +248,36 @@ kdf(uint8_t *salt, int allowstdin, int confirm, uint8_t *key)
 	    crypto_pwhash_ALG_DEFAULT) == -1)
 		errx(1, "crypto_pwhash failure");
 	explicit_bzero(pass, sizeof(pass));
+}
+
+static void
+print_value(char *name, unsigned char *str, int size)
+{
+	char buf[MAX_LINE];
+
+	str_hex(buf, sizeof(buf), str, size);
+	printf("%s = %s\n", name, buf);
+	explicit_bzero(buf, sizeof(buf));
+}
+
+static char *
+str_hex(char *str, int size, void *data, int len)
+{
+	const int hexsize = 2;
+	int i;
+	unsigned char *p;
+
+	memset(str, 0, size);
+	p = data;
+	for (i = 0; i < len; i++) {
+		if (size <= hexsize) {
+			warnx("string truncation");
+			break;
+		}
+		snprintf(str, size, "%02X", p[i]);
+		size -= hexsize;
+		str += hexsize;
+	}
+
+	return str;
 }

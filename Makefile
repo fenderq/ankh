@@ -1,5 +1,5 @@
-PROG=		ankhnempem
-SRCS=		ankhnempem.c
+PROG=		ankh
+SRCS=		ankh.c
 
 BINDIR=		/usr/local/bin
 

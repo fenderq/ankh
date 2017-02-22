@@ -51,7 +51,7 @@ int verbose;
 
 __dead void usage(void);
 
-static int	 ankhnempem(char *, char *, int);
+static int	 ankh(char *, char *, int);
 static int	 decrypt(struct cipher_info *);
 static int	 encrypt(struct cipher_info *);
 static void	 kdf(uint8_t *, int, int, uint8_t *);
@@ -102,7 +102,7 @@ main(int argc, char *argv[])
 		usage();
 
 	set_mode(mode);
-	ankhnempem(argv[0], argv[1], dflag ? 0 : 1);
+	ankh(argv[0], argv[1], dflag ? 0 : 1);
 
 	exit(EXIT_SUCCESS);
 }
@@ -110,12 +110,12 @@ main(int argc, char *argv[])
 void
 usage(void)
 {
-	fprintf(stderr, "usage: %s [-dv] infile outfile\n", __progname);
+	fprintf(stderr, "usage: %s [-dmv] infile outfile\n", __progname);
 	exit(EXIT_FAILURE);
 }
 
 static int
-ankhnempem(char *infile, char *outfile, int enc)
+ankh(char *infile, char *outfile, int enc)
 {
 	struct cipher_info *c;
 	unsigned char salt[crypto_pwhash_SALTBYTES];

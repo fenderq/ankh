@@ -25,6 +25,7 @@
 #include <sodium.h>
 
 #define BUFSIZE 1024 * 1024
+#define DEFAULT_MODE 3
 #define MAX_LINE 4096
 #define MAX_PASSWD 1024
 #define VERSION "1.0.0"
@@ -62,7 +63,7 @@ main(int argc, char *argv[])
 	int mode;
 
 	dflag = 0;
-	mode = 3;
+	mode = DEFAULT_MODE;
 
 	if (pledge("cpath rpath stdio tty wpath", NULL) == -1)
 		err(1, "pledge");

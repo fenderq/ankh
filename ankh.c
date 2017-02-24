@@ -26,7 +26,7 @@
 #define DEFAULT_MODE 3
 #define MAX_LINE 4096
 #define MAX_PASSWD 1024
-#define VERSION "1.1.0"
+#define VERSION "1.2.0"
 
 struct cipher_info {
 	FILE *fin;
@@ -87,6 +87,9 @@ main(int argc, char *argv[])
 	}
 	argc -= optind;
 	argv += optind;
+
+	if (verbose)
+		printf("%s v%s\n", __progname, VERSION);
 
 	if (argc != 2)
 		usage();

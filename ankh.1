@@ -26,15 +26,10 @@
 .Ar infile
 .Ar outfile
 .Sh DESCRIPTION
-.Nm
-is a file encryption utility.
 .Pp
+The
 .Nm
-uses Argon2i for password hashing, the XSalsa20 stream cipher for
-encryption and Poly1305 MAC for authentication.
-.Pp
-.Nm
-will read from
+utility will read from
 .Ar infile
 and write to
 .Ar outfile .
@@ -47,6 +42,9 @@ option controls the key derivation function.
 The
 .Fl v
 option prints extra details about the operation being performed.
+.Pp
+The key derivation function uses Argon2i. The encryption process uses
+the XSalsa20 stream cipher. Authentication is done with Poly1305 MAC.
 .Pp
 The options are as follows:
 .Bl -tag -width Ds

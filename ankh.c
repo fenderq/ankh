@@ -16,11 +16,9 @@
 
 #include <err.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <readpassphrase.h>
 #include <unistd.h>
-#include <util.h>
 
 #include <sodium.h>
 
@@ -28,7 +26,7 @@
 #define DEFAULT_MODE 3
 #define MAX_LINE 4096
 #define MAX_PASSWD 1024
-#define VERSION "1.0.0"
+#define VERSION "1.1.0"
 
 struct cipher_info {
 	FILE *fin;
@@ -51,7 +49,6 @@ static int	 decrypt(struct cipher_info *);
 static int	 encrypt(struct cipher_info *);
 static void	 kdf(uint8_t *, int, int, uint8_t *);
 static void	 print_value(char *, unsigned char *, int);
-static char	*str_hex(char *, int, void *, int);
 static void	 set_mode(int);
 
 int
@@ -69,7 +66,7 @@ main(int argc, char *argv[])
 		err(1, "pledge");
 
 	if (sodium_init() == -1)
-		errx(1, "libsodium init failure");
+		errx(1, "libsodium init error");
 
 	while ((ch = getopt(argc, argv, "dm:v")) != -1) {
 		switch (ch) {
@@ -96,6 +93,7 @@ main(int argc, char *argv[])
 		usage();
 
 	set_mode(mode);
+
 	ankh(argv[0], argv[1], dflag ? 0 : 1);
 
 	exit(EXIT_SUCCESS);
@@ -118,11 +116,13 @@ ankh(char *infile, char *outfile, int enc)
 		err(1, NULL);
 	c->enc = enc;
 
+	/* Open files. */
 	if ((c->fin = fopen(infile, "r")) == NULL)
 		err(1, "%s", infile);
 	if ((c->fout = fopen(outfile, "w")) == NULL)
 		err(1, "%s", outfile);
 
+	/* Get the salt. */
 	if (c->enc) {
 		randombytes_buf(salt, sizeof(salt));
 		if (fwrite(salt, sizeof(salt), 1, c->fout) != 1)
@@ -135,6 +135,7 @@ ankh(char *infile, char *outfile, int enc)
 	if (verbose)
 		printf("opslimit = %lld, memlimit = %ld\n", opslimit, memlimit);
 
+	/* Get the key from passphrase. */
 	kdf(salt, 1, c->enc ? 1 : 0, c->key);
 
 	if (pledge("stdio", NULL) == -1)
@@ -147,9 +148,10 @@ ankh(char *infile, char *outfile, int enc)
 
 	enc ? encrypt(c) : decrypt(c);
 
+	/* Close files, zero and free memory. */
 	fclose(c->fin);
 	fclose(c->fout);
-	explicit_bzero(c, sizeof(struct cipher_info));
+	sodium_memzero(c, sizeof(struct cipher_info));
 	free(c);
 
 	return 0;
@@ -173,9 +175,9 @@ decrypt(struct cipher_info *ci)
 	if ((m = malloc(mlen)) == NULL)
 		err(1, NULL);
 
+	sodium_memzero(n, sizeof(n));
 	while (feof(ci->fin) == 0) {
-		if (fread(n, sizeof(n), 1, ci->fin) == 0)
-			errx(1, "error reading nonce");
+		sodium_increment(n, sizeof(n));
 		if (verbose)
 			print_value("nonce", n, sizeof(n));
 		if (fread(mac, sizeof(mac), 1, ci->fin) == 0)
@@ -185,11 +187,11 @@ decrypt(struct cipher_info *ci)
 				errx(1, "error reading from input stream");
 			break;
 		}
-		if (crypto_secretbox_open_detached(m,
-		    c, mac, r, n, ci->key) != 0)
+		if (crypto_secretbox_open_detached(
+		    m, c, mac, r, n, ci->key) != 0)
 			errx(1, "invalid message data");
 		if (fwrite(m, r, 1, ci->fout) == 0)
-			errx(1, "failure writing to output stream");
+			errx(1, "error writing to output stream");
 	}
 
 	free(c);
@@ -216,17 +218,16 @@ encrypt(struct cipher_info *ci)
 	if ((m = malloc(mlen)) == NULL)
 		err(1, NULL);
 
+	sodium_memzero(n, sizeof(n));
 	while ((r = fread(m, 1, mlen, ci->fin)) != 0) {
-		randombytes_buf(n, sizeof(n));
-		crypto_secretbox_detached(c, mac, m, r, n, ci->key);
-		if (fwrite(n, sizeof(n), 1, ci->fout) == 0)
-			errx(1, "error writing nonce");
+		sodium_increment(n, sizeof(n));
 		if (verbose)
 			print_value("nonce", n, sizeof(n));
+		crypto_secretbox_detached(c, mac, m, r, n, ci->key);
 		if (fwrite(mac, sizeof(mac), 1, ci->fout) == 0)
 			errx(1, "error writing mac");
 		if (fwrite(c, r, 1, ci->fout) == 0)
-			errx(1, "failure writing to output stream");
+			errx(1, "error writing to output stream");
 	}
 	if (ferror(ci->fin))
 		errx(1, "error reading from input stream");
@@ -256,24 +257,30 @@ kdf(uint8_t *salt, int allowstdin, int confirm, uint8_t *key)
 			errx(1, "unable to read passphrase");
 		if (strcmp(pass, pass2) != 0)
 			errx(1, "passwords don't match");
-		explicit_bzero(pass2, sizeof(pass2));
+		sodium_memzero(pass2, sizeof(pass2));
 	}
 	if (crypto_pwhash(key, crypto_secretbox_KEYBYTES, pass, strlen(pass),
 	    salt, opslimit, memlimit, crypto_pwhash_ALG_DEFAULT) == -1)
-		errx(1, "crypto_pwhash failure");
-	explicit_bzero(pass, sizeof(pass));
+		errx(1, "crypto_pwhash error");
+	sodium_memzero(pass, sizeof(pass));
 }
 
 static void
-print_value(char *name, unsigned char *str, int size)
+print_value(char *name, unsigned char *bin, int size)
 {
-	char buf[MAX_LINE];
+	char hex[MAX_LINE];
 
-	str_hex(buf, sizeof(buf), str, size);
-	printf("%s = %s\n", name, buf);
-	explicit_bzero(buf, sizeof(buf));
+	sodium_bin2hex(hex, sizeof(hex), bin, size);
+	printf("%s = %s\n", name, hex);
+	sodium_memzero(hex, sizeof(hex));
 }
 
+/*
+ * Set the mode.
+ * 1) Interactive 2) Moderate 3) Sensitive
+ * This will set parameters for the key derivation function.
+ * See libsodium documentation on crypto_pwhash.
+ */
 static void
 set_mode(int mode)
 {
@@ -294,26 +301,4 @@ set_mode(int mode)
 		errx(1, "undefined mode %d", mode);
 		break;
 	}
-}
-
-static char *
-str_hex(char *str, int size, void *data, int len)
-{
-	const int hexsize = 2;
-	int i;
-	unsigned char *p;
-
-	memset(str, 0, size);
-	p = data;
-	for (i = 0; i < len; i++) {
-		if (size <= hexsize) {
-			warnx("string truncation");
-			break;
-		}
-		snprintf(str, size, "%02X", p[i]);
-		size -= hexsize;
-		str += hexsize;
-	}
-
-	return str;
 }

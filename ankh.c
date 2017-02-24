@@ -109,22 +109,22 @@ usage(void)
 static int
 ankh(char *infile, char *outfile, int enc)
 {
-	struct cipher_info *c;
+	struct cipher_info *ci;
 	unsigned char salt[crypto_pwhash_SALTBYTES];
 
-	if ((c = calloc(1, sizeof(struct cipher_info))) == NULL)
+	if ((ci = calloc(1, sizeof(struct cipher_info))) == NULL)
 		err(1, NULL);
-	c->enc = enc;
+	ci->enc = enc;
 
 	/* Open input file. */
-	if ((c->fin = fopen(infile, "r")) == NULL)
+	if ((ci->fin = fopen(infile, "r")) == NULL)
 		err(1, "%s", infile);
 
 	/* Get the salt. */
-	if (c->enc)
+	if (ci->enc)
 		randombytes_buf(salt, sizeof(salt));
 	else {
-		if (fread(salt, sizeof(salt), 1, c->fin) != 1)
+		if (fread(salt, sizeof(salt), 1, ci->fin) != 1)
 			errx(1, "error reading salt from %s", infile);
 	}
 
@@ -132,20 +132,20 @@ ankh(char *infile, char *outfile, int enc)
 		printf("opslimit = %lld, memlimit = %ld\n", opslimit, memlimit);
 
 	/* Get the key from passphrase. */
-	kdf(salt, 1, c->enc ? 1 : 0, c->key);
+	kdf(salt, 1, ci->enc ? 1 : 0, ci->key);
 
 	if (verbose) {
 		print_value("salt", salt, sizeof(salt));
-		print_value("key", c->key, sizeof(c->key));
+		print_value("key", ci->key, sizeof(ci->key));
 	}
 
 	/* Open output file. */
-	if ((c->fout = fopen(outfile, "w")) == NULL)
+	if ((ci->fout = fopen(outfile, "w")) == NULL)
 		err(1, "%s", outfile);
 
-	if (c->enc) {
+	if (ci->enc) {
 		/* Write salt to output file. */
-		if (fwrite(salt, sizeof(salt), 1, c->fout) != 1)
+		if (fwrite(salt, sizeof(salt), 1, ci->fout) != 1)
 			errx(1, "error writing salt to %s", infile);
 	}
 
@@ -153,13 +153,13 @@ ankh(char *infile, char *outfile, int enc)
 		err(1, "pledge");
 
 	/* Perform the crypto operation. */
-	enc ? encrypt(c) : decrypt(c);
+	enc ? encrypt(ci) : decrypt(ci);
 
 	/* Close files, zero and free memory. */
-	fclose(c->fin);
-	fclose(c->fout);
-	sodium_memzero(c, sizeof(struct cipher_info));
-	free(c);
+	fclose(ci->fin);
+	fclose(ci->fout);
+	sodium_memzero(ci, sizeof(struct cipher_info));
+	free(ci);
 
 	return 0;
 }

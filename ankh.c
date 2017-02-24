@@ -116,18 +116,14 @@ ankh(char *infile, char *outfile, int enc)
 		err(1, NULL);
 	c->enc = enc;
 
-	/* Open files. */
+	/* Open input file. */
 	if ((c->fin = fopen(infile, "r")) == NULL)
 		err(1, "%s", infile);
-	if ((c->fout = fopen(outfile, "w")) == NULL)
-		err(1, "%s", outfile);
 
 	/* Get the salt. */
-	if (c->enc) {
+	if (c->enc)
 		randombytes_buf(salt, sizeof(salt));
-		if (fwrite(salt, sizeof(salt), 1, c->fout) != 1)
-			errx(1, "error writing salt to %s", infile);
-	} else {
+	else {
 		if (fread(salt, sizeof(salt), 1, c->fin) != 1)
 			errx(1, "error reading salt from %s", infile);
 	}
@@ -138,14 +134,25 @@ ankh(char *infile, char *outfile, int enc)
 	/* Get the key from passphrase. */
 	kdf(salt, 1, c->enc ? 1 : 0, c->key);
 
-	if (pledge("stdio", NULL) == -1)
-		err(1, "pledge");
-
 	if (verbose) {
 		print_value("salt", salt, sizeof(salt));
 		print_value("key", c->key, sizeof(c->key));
 	}
 
+	/* Open output file. */
+	if ((c->fout = fopen(outfile, "w")) == NULL)
+		err(1, "%s", outfile);
+
+	if (c->enc) {
+		/* Write salt to output file. */
+		if (fwrite(salt, sizeof(salt), 1, c->fout) != 1)
+			errx(1, "error writing salt to %s", infile);
+	}
+
+	if (pledge("stdio", NULL) == -1)
+		err(1, "pledge");
+
+	/* Perform the crypto operation. */
 	enc ? encrypt(c) : decrypt(c);
 
 	/* Close files, zero and free memory. */
@@ -279,7 +286,7 @@ print_value(char *name, unsigned char *bin, int size)
  * Set the mode.
  * 1) Interactive 2) Moderate 3) Sensitive
  * This will set parameters for the key derivation function.
- * See libsodium documentation on crypto_pwhash.
+ * See libsodium crypto_pwhash documentation.
  */
 static void
 set_mode(int mode)

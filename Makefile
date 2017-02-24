@@ -1,8 +1,6 @@
 PROG=		ankh
 SRCS=		ankh.c
 
-BINDIR=		/usr/local/bin
-
 CFLAGS+=	-Wall -Werror
 CFLAGS+=	-Wmissing-declarations
 CFLAGS+=	-Wshadow -Wpointer-arith
@@ -12,7 +10,8 @@ CFLAGS+=	-I/usr/local/include
 
 LDADD=		-L/usr/local/lib -lsodium
 
-NOMAN=		noman
+BINDIR=		/usr/local/bin
+MANDIR=		/usr/local/man/man
 
 secret=		secret.passphrase
 testsize=	bs=$$(($$RANDOM % 1024 + 1)) count=$$(($$RANDOM % 8192 + 1024))

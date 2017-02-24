@@ -101,7 +101,8 @@ main(int argc, char *argv[])
 void
 usage(void)
 {
-	fprintf(stderr, "usage: %s [-dmv] infile outfile\n", __progname);
+	fprintf(stderr, "usage: %s [-dv] [-m mode] infile outfile\n",
+	    __progname);
 	exit(EXIT_FAILURE);
 }
 

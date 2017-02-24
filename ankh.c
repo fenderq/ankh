@@ -31,7 +31,6 @@
 struct cipher_info {
 	FILE *fin;
 	FILE *fout;
-	int enc;
 	unsigned char key[crypto_secretbox_KEYBYTES];
 };
 
@@ -114,14 +113,13 @@ ankh(char *infile, char *outfile, int enc)
 
 	if ((ci = calloc(1, sizeof(struct cipher_info))) == NULL)
 		err(1, NULL);
-	ci->enc = enc;
 
 	/* Open input file. */
 	if ((ci->fin = fopen(infile, "r")) == NULL)
 		err(1, "%s", infile);
 
 	/* Get the salt. */
-	if (ci->enc)
+	if (enc)
 		randombytes_buf(salt, sizeof(salt));
 	else {
 		if (fread(salt, sizeof(salt), 1, ci->fin) != 1)
@@ -132,7 +130,7 @@ ankh(char *infile, char *outfile, int enc)
 		printf("opslimit = %lld, memlimit = %ld\n", opslimit, memlimit);
 
 	/* Get the key from passphrase. */
-	kdf(salt, 1, ci->enc ? 1 : 0, ci->key);
+	kdf(salt, 1, enc ? 1 : 0, ci->key);
 
 	if (verbose) {
 		print_value("salt", salt, sizeof(salt));
@@ -143,7 +141,7 @@ ankh(char *infile, char *outfile, int enc)
 	if ((ci->fout = fopen(outfile, "w")) == NULL)
 		err(1, "%s", outfile);
 
-	if (ci->enc) {
+	if (enc) {
 		/* Write salt to output file. */
 		if (fwrite(salt, sizeof(salt), 1, ci->fout) != 1)
 			errx(1, "error writing salt to %s", infile);

@@ -195,6 +195,8 @@ decrypt(struct cipher_info *ci)
 		if ((r = fread(c, 1, clen, ci->fin)) == 0) {
 			if (ferror(ci->fin))
 				errx(1, "error reading from input stream");
+			else
+				warnx(1, "mac without ciphertext");
 			break;
 		}
 		if (crypto_secretbox_open_detached(

@@ -185,10 +185,15 @@ decrypt(struct cipher_info *ci)
 	sodium_memzero(n, sizeof(n));
 	while (feof(ci->fin) == 0) {
 		sodium_increment(n, sizeof(n));
-		if (verbose)
+		if (fread(mac, sizeof(mac), 1, ci->fin) == 0) {
+			if (ferror(ci->fin))
+				errx(1, "error reading mac");
+			break;
+		}
+		if (verbose) {
 			print_value("nonce", n, sizeof(n));
-		if (fread(mac, sizeof(mac), 1, ci->fin) == 0)
-			errx(1, "error reading mac");
+			print_value("mac", mac, sizeof(mac));
+		}
 		if ((r = fread(c, 1, clen, ci->fin)) == 0) {
 			if (ferror(ci->fin))
 				errx(1, "error reading from input stream");
@@ -228,9 +233,11 @@ encrypt(struct cipher_info *ci)
 	sodium_memzero(n, sizeof(n));
 	while ((r = fread(m, 1, mlen, ci->fin)) != 0) {
 		sodium_increment(n, sizeof(n));
-		if (verbose)
-			print_value("nonce", n, sizeof(n));
 		crypto_secretbox_detached(c, mac, m, r, n, ci->key);
+		if (verbose) {
+			print_value("nonce", n, sizeof(n));
+			print_value("mac", mac, sizeof(mac));
+		}
 		if (fwrite(mac, sizeof(mac), 1, ci->fout) == 0)
 			errx(1, "error writing mac");
 		if (fwrite(c, r, 1, ci->fout) == 0)

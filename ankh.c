@@ -183,7 +183,7 @@ decrypt(struct cipher_info *ci)
 		err(1, NULL);
 
 	sodium_memzero(n, sizeof(n));
-	while (feof(ci->fin) == 0) {
+	do {
 		sodium_increment(n, sizeof(n));
 		if (fread(mac, sizeof(mac), 1, ci->fin) == 0) {
 			if (ferror(ci->fin))
@@ -204,7 +204,7 @@ decrypt(struct cipher_info *ci)
 			errx(1, "invalid message data");
 		if (fwrite(m, r, 1, ci->fout) == 0)
 			errx(1, "error writing to output stream");
-	}
+	} while (1);
 
 	free(c);
 	free(m);

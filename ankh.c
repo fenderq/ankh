@@ -31,6 +31,7 @@
 struct cipher_info {
 	FILE *fin;
 	FILE *fout;
+	int enc;
 	unsigned char key[crypto_secretbox_KEYBYTES];
 };
 
@@ -44,8 +45,7 @@ int verbose;
 __dead void usage(void);
 
 static int	 ankh(char *, char *, int);
-static int	 decrypt(struct cipher_info *);
-static int	 encrypt(struct cipher_info *);
+static int	 cipher(struct cipher_info *);
 static void	 kdf(uint8_t *, int, int, uint8_t *);
 static void	 print_value(char *, unsigned char *, int);
 static void	 set_mode(int);
@@ -117,6 +117,7 @@ ankh(char *infile, char *outfile, int enc)
 
 	if ((ci = calloc(1, sizeof(struct cipher_info))) == NULL)
 		err(1, NULL);
+	ci->enc = enc;
 
 	/* Open input file. */
 	if ((ci->fin = fopen(infile, "r")) == NULL)
@@ -155,7 +156,7 @@ ankh(char *infile, char *outfile, int enc)
 		err(1, "pledge");
 
 	/* Perform the crypto operation. */
-	enc ? encrypt(ci) : decrypt(ci);
+	cipher(ci);
 
 	/* Close files, zero and free memory. */
 	fclose(ci->fin);
@@ -167,91 +168,49 @@ ankh(char *infile, char *outfile, int enc)
 }
 
 static int
-decrypt(struct cipher_info *ci)
+cipher(struct cipher_info *ci)
 {
-	int clen;
-	int mlen;
-	size_t r;
-	unsigned char *c;
-	unsigned char *m;
-	unsigned char mac[crypto_secretbox_MACBYTES];
+	size_t bufsize;
+	size_t bytes;
+	size_t rlen;
+	size_t wlen;
+	unsigned char *buf;
 	unsigned char n[crypto_secretbox_NONCEBYTES];
 
-	clen = BUFSIZE;
-	if ((c = malloc(clen)) == NULL)
-		err(1, NULL);
-	mlen = BUFSIZE;
-	if ((m = malloc(mlen)) == NULL)
+	bufsize = BUFSIZE;
+	if ((buf = malloc(bufsize)) == NULL)
 		err(1, NULL);
 
+	/*
+	 * Determine how much we want to read based on operation.
+	 * We need to reserve space for the MAC.
+	 */
+	rlen = ci->enc ? bufsize - crypto_secretbox_MACBYTES : bufsize;
 	sodium_memzero(n, sizeof(n));
-	do {
+	while ((bytes = fread(buf, 1, rlen, ci->fin)) != 0) {
 		sodium_increment(n, sizeof(n));
-		if (fread(mac, sizeof(mac), 1, ci->fin) == 0) {
-			if (ferror(ci->fin))
-				errx(1, "error reading mac");
-			break;
+		/*
+		 * Memory may overlap for both encrypt and decrypt.
+		 * Ciphertext writes extra bytes for the MAC.
+		 * Plaintext only writes the original data.
+		 */
+		if (ci->enc) {
+			crypto_secretbox_easy(buf, buf, bytes, n, ci->key);
+			wlen = bytes + crypto_secretbox_MACBYTES;
+		} else {
+			if (crypto_secretbox_open_easy(
+			    buf, buf, bytes, n, ci->key) != 0)
+				errx(1, "invalid message data");
+			wlen = bytes - crypto_secretbox_MACBYTES;
 		}
-		if (verbose) {
-			print_value("nonce", n, sizeof(n));
-			print_value("mac", mac, sizeof(mac));
-		}
-		if ((r = fread(c, 1, clen, ci->fin)) == 0) {
-			if (ferror(ci->fin))
-				errx(1, "error reading from input stream");
-			else
-				warnx("mac without ciphertext");
-			break;
-		}
-		if (crypto_secretbox_open_detached(
-		    m, c, mac, r, n, ci->key) != 0)
-			errx(1, "invalid message data");
-		if (fwrite(m, r, 1, ci->fout) == 0)
-			errx(1, "error writing to output stream");
-	} while (1);
-
-	free(c);
-	free(m);
-
-	return 0;
-}
-
-static int
-encrypt(struct cipher_info *ci)
-{
-	int clen;
-	int mlen;
-	size_t r;
-	unsigned char *c;
-	unsigned char *m;
-	unsigned char mac[crypto_secretbox_MACBYTES];
-	unsigned char n[crypto_secretbox_NONCEBYTES];
-
-	clen = BUFSIZE;
-	if ((c = malloc(clen)) == NULL)
-		err(1, NULL);
-	mlen = BUFSIZE;
-	if ((m = malloc(mlen)) == NULL)
-		err(1, NULL);
-
-	sodium_memzero(n, sizeof(n));
-	while ((r = fread(m, 1, mlen, ci->fin)) != 0) {
-		sodium_increment(n, sizeof(n));
-		crypto_secretbox_detached(c, mac, m, r, n, ci->key);
-		if (verbose) {
-			print_value("nonce", n, sizeof(n));
-			print_value("mac", mac, sizeof(mac));
-		}
-		if (fwrite(mac, sizeof(mac), 1, ci->fout) == 0)
-			errx(1, "error writing mac");
-		if (fwrite(c, r, 1, ci->fout) == 0)
+		if (fwrite(buf, wlen, 1, ci->fout) == 0)
 			errx(1, "error writing to output stream");
 	}
 	if (ferror(ci->fin))
 		errx(1, "error reading from input stream");
 
-	free(c);
-	free(m);
+	sodium_memzero(buf, bufsize);
+	free(buf);
 
 	return 0;
 }

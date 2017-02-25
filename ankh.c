@@ -26,7 +26,7 @@
 #define DEFAULT_MODE 2
 #define MAX_LINE 4096
 #define MAX_PASSWD 1024
-#define VERSION "1.2.0"
+#define VERSION "1.3.0"
 
 struct cipher_info {
 	FILE *fin;

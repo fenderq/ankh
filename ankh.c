@@ -186,6 +186,7 @@ cipher(struct cipher_info *ci)
 	 * We need to reserve space for the MAC.
 	 */
 	rlen = ci->enc ? bufsize - crypto_secretbox_MACBYTES : bufsize;
+
 	sodium_memzero(n, sizeof(n));
 	while ((bytes = fread(buf, 1, rlen, ci->fin)) != 0) {
 		sodium_increment(n, sizeof(n));

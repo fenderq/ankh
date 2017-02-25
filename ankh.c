@@ -23,7 +23,7 @@
 #include <sodium.h>
 
 #define BUFSIZE 1024 * 1024
-#define DEFAULT_MODE 3
+#define DEFAULT_MODE 2
 #define MAX_LINE 4096
 #define MAX_PASSWD 1024
 #define VERSION "1.2.0"

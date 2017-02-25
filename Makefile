@@ -15,7 +15,7 @@ MANDIR=		/usr/local/man/man
 
 secret=		secret.passphrase
 testsize=	bs=$$(($$RANDOM % 1024 + 1)) count=$$(($$RANDOM % 8192 + 1024))
-mode=		1
+mode=		2
 
 test: ${PROG}
 	dd if=/dev/random of=foo.bin ${testsize}

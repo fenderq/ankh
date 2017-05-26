@@ -21,8 +21,8 @@ test: ${PROG}
 	dd if=/dev/random of=foo.bin ${testsize}
 	sha256 foo.bin | tee SHA256
 	tr -cd [:graph:] < /dev/random | fold -bw 20 | head -1 | tee ${secret}
-	${PROG} -m ${mode} -v foo.bin bar.bin < ${secret}
-	${PROG} -m ${mode} -v -d bar.bin foo.bin < ${secret}
+	${PROG} -K -m ${mode} -v -i foo.bin -o bar.bin < ${secret}
+	${PROG} -K -m ${mode} -v -d -i bar.bin -o foo.bin < ${secret}
 	sha256 -c SHA256
 
 .include <bsd.prog.mk>

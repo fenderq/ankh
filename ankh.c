@@ -14,6 +14,8 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <sys/queue.h>
+
 #include <err.h>
 #include <stdio.h>
 #include <string.h>
@@ -27,12 +29,12 @@
 #define DEFAULT_MODE 2
 #define MAX_LINE 4096
 #define MAX_PASSWD 1024
+#define MIN_PASSWD 16
 #define MAX_STRING 256
 #define VERSION "2.0.0"
 
 enum command {
 	CMD_UNDEFINED,
-	CMD_CHANGE_PASSPHRASE,
 	CMD_GENERATE_KEY_PAIR,
 	CMD_HASH,
 	CMD_PUBLIC_KEY,
@@ -40,6 +42,13 @@ enum command {
 	CMD_SECRET_KEY,
 	CMD_SIGNATURE,
 	CMD_VERSION
+};
+
+SLIST_HEAD(nvplist, nvp);
+struct nvp {
+	char *name;
+	char *value;
+	SLIST_ENTRY(nvp) entries;
 };
 
 struct cipher_info {
@@ -59,19 +68,22 @@ int verbose;
 __dead void usage(void);
 
 static int	 cipher(struct cipher_info *);
-static int	 generate_key_pair(char *, char *, char *, char *);
-static int	 read_key(char *, size_t);
-static int	 read_keyfile(char *, char *, size_t);
-static int	 secret_key(char *, char *, int);
-static void	 kdf(uint8_t *, int, int, uint8_t *);
+static int	 generate_key_pair(char *, char *, char *);
+static int	 read_passwd_tty(char *, size_t, int);
+static int	 read_passwd_file(char *, size_t, char *);
+static int	 secret_key(char *, char *, int, char *);
 static void	 print_value(char *, unsigned char *, int);
 static void	 set_mode(int);
 static char	*str_time(char *, size_t, time_t);
+int		 nvp_add(char *, char *, struct nvplist *);
+void		 nvp_free(struct nvplist *);
+int		 nvp_find(const char *, struct nvplist *, struct nvp **);
+static int	 load_seckey(char *, unsigned char *, char *);
+static int	 save_seckey(char *, unsigned char *, size_t, char *);
 
 int
 main(int argc, char *argv[])
 {
-	char *comment;
 	char *infile;
 	char *keyfile;
 	char *outfile;
@@ -84,7 +96,6 @@ main(int argc, char *argv[])
 	int mode;
 
 	cmd = CMD_UNDEFINED;
-	comment = NULL;
 	dflag = 0;
 	infile = NULL;
 	keyfile = NULL;
@@ -100,17 +111,12 @@ main(int argc, char *argv[])
 	if (sodium_init() == -1)
 		errx(1, "libsodium init error");
 
-	while ((ch = getopt(argc, argv, "BCGHKPSVc:di:k:m:o:p:s:v")) != -1) {
+	while ((ch = getopt(argc, argv, "BGHKPSVdi:k:m:o:p:s:v")) != -1) {
 		switch (ch) {
 		case 'B':
 			if (cmd != CMD_UNDEFINED)
 				usage();
 			cmd = CMD_SEALED_BOX;
-			break;
-		case 'C':
-			if (cmd != CMD_UNDEFINED)
-				usage();
-			cmd = CMD_CHANGE_PASSPHRASE;
 			break;
 		case 'G':
 			if (cmd != CMD_UNDEFINED)
@@ -141,9 +147,6 @@ main(int argc, char *argv[])
 			if (cmd != CMD_UNDEFINED)
 				usage();
 			cmd = CMD_VERSION;
-			break;
-		case 'c':
-			comment = optarg;
 			break;
 		case 'd':
 			dflag = 1;
@@ -185,10 +188,8 @@ main(int argc, char *argv[])
 	case CMD_UNDEFINED:
 		usage();
 		break;
-	case CMD_CHANGE_PASSPHRASE:
-		break;
 	case CMD_GENERATE_KEY_PAIR:
-		generate_key_pair(pubkey, seckey, keyfile, comment);
+		generate_key_pair(pubkey, seckey, keyfile);
 		break;
 	case CMD_HASH:
 		break;
@@ -197,7 +198,7 @@ main(int argc, char *argv[])
 	case CMD_SEALED_BOX:
 		break;
 	case CMD_SECRET_KEY:
-		secret_key(infile, outfile, dflag ? 0 : 1);
+		secret_key(infile, outfile, dflag ? 0 : 1, keyfile);
 		break;
 	case CMD_SIGNATURE:
 		break;
@@ -215,8 +216,7 @@ usage(void)
 {
 	/*
 		ankh B [sealed box] -d -p -s -i -o
-		ankh C [change passphrase] -k -m -s
-		ankh G [generate key pair] -c -k -m -p -s
+		ankh G [generate key pair] -m -p -s
 		ankh H [hash] -i -o
 		ankh K [secret key] -d -k -m -i -o
 		ankh P [public key] -d -p -s -i -o
@@ -229,7 +229,7 @@ usage(void)
 }
 
 static int
-save_pubkey(char *fname, unsigned char *k, size_t kz, char *comment)
+save_pubkey(char *fname, unsigned char *k, size_t kz)
 {
 	FILE *fp;
 	char *hex;
@@ -246,8 +246,6 @@ save_pubkey(char *fname, unsigned char *k, size_t kz, char *comment)
 	time(&t);
 	str_time(now, sizeof(now), t);
 	fprintf(fp, "# %s public key\n# %s\n", __progname, now);
-	if (comment)
-		fprintf(fp, "# %s\n", comment);
 	fprintf(fp, "Key: %s\n", hex);
 	fclose(fp);
 	free(hex);
@@ -256,8 +254,128 @@ save_pubkey(char *fname, unsigned char *k, size_t kz, char *comment)
 }
 
 static int
-save_seckey(char *fname, unsigned char *k, size_t kz, char *comment,
-    char *keyfile)
+load_seckey(char *fname, unsigned char *sk, char *keyfile)
+{
+	FILE *fp;
+	char *line;
+	char passwd[MAX_PASSWD];
+	const char *ep;
+	const char *name;
+	size_t ctlen;
+	size_t linesize;
+	ssize_t linelen;
+	struct nvp *np;
+	struct nvplist lines;
+	unsigned char *ct;
+	unsigned char key[crypto_secretbox_KEYBYTES];
+	unsigned char nonce[crypto_secretbox_NONCEBYTES];
+	unsigned char salt[crypto_pwhash_SALTBYTES];
+
+	SLIST_INIT(&lines);
+
+	/* Open the file. */
+	if ((fp = fopen(fname, "r")) == NULL)
+		err(1, "%s", fname);
+
+	/* Create a tmp line. */
+	linesize = MAX_LINE;
+	if ((line = malloc(linesize)) == NULL)
+		err(1, NULL);
+
+	/* Add each line to a name/value list. */
+	while ((linelen = getline(&line, &linesize, fp)) != -1) {
+		if (line[0] == '#')
+			continue;
+		line[strcspn(line, "\n")] = '\0';
+		nvp_add(line, ": ", &lines);
+		printf("%s\n", line);
+	}
+	if (ferror(fp))
+		err(1, "%s", fname);
+
+	/* Free tmp line and close file. */
+	free(line);
+	fclose(fp);
+
+	/* Get name/value pairs. */
+	name = "opslimit";
+	if (nvp_find(name, &lines, &np) != 0)
+		errx(1, "missing %s in %s", name, fname);
+	opslimit = strtonum(np->value, 1, LONG_MAX, &ep);
+	if (ep != NULL)
+		errx(1, "opslimit %s", ep);
+
+	name = "memlimit";
+	if (nvp_find(name, &lines, &np) != 0)
+		errx(1, "missing %s in %s", name, fname);
+	memlimit = strtonum(np->value, 1, LONG_MAX, &ep);
+	if (ep != NULL)
+		errx(1, "memlimit %s", ep);
+
+	name = "salt";
+	if (nvp_find(name, &lines, &np) != 0)
+		errx(1, "missing %s in %s", name, fname);
+	if (sodium_hex2bin(salt, sizeof(salt), np->value, strlen(np->value),
+	    NULL, NULL, NULL) != 0)
+		errx(1, "invalid data: %s", np->value);
+
+	name = "nonce";
+	if (nvp_find(name, &lines, &np) != 0)
+		errx(1, "missing %s in %s", name, fname);
+	if (sodium_hex2bin(nonce, sizeof(nonce), np->value, strlen(np->value),
+	    NULL, NULL, NULL) != 0)
+		errx(1, "invalid data: %s", np->value);
+
+	name = "key";
+	if (nvp_find(name, &lines, &np) != 0)
+		errx(1, "missing %s in %s", name, fname);
+	ctlen = strlen(np->value) / 2;
+	if ((ct = malloc(ctlen)) == NULL)
+		err(1, NULL);
+	if (sodium_hex2bin(ct, ctlen, np->value, strlen(np->value),
+	    NULL, NULL, NULL) != 0)
+		errx(1, "invalid data: %s", np->value);
+
+	/* Free lines. */
+	nvp_free(&lines);
+
+	if (verbose) {
+		printf("reading file %s ...\n", fname);
+		printf("opslimit = %llu\n", opslimit);
+		printf("memlimit = %ld\n", memlimit);
+		print_value("salt", salt, sizeof(salt));
+		print_value("nonce", nonce, sizeof(nonce));
+		print_value("key", ct, ctlen);
+	}
+
+	/* Read in passphrase. */
+	if (keyfile)
+		read_passwd_file(passwd, sizeof(passwd), keyfile);
+	else
+		read_passwd_tty(passwd, sizeof(passwd), 1);
+
+	/* Generate key from passphrase. */
+	if (crypto_pwhash(key, sizeof(key), passwd, strlen(passwd), salt,
+	    opslimit, memlimit, crypto_pwhash_ALG_DEFAULT) != 0)
+		errx(1, "libsodium crypto_pwhash: out of memory");
+
+	/* Clear passphrase from memory. */
+	sodium_memzero(passwd, sizeof(passwd));
+
+	/* Decrypt the secret key. */
+	if (crypto_secretbox_open_easy(sk, ct, ctlen, nonce, key) != 0)
+		errx(1, "invalid secret key");
+
+	/* Clear key from memory. */
+	sodium_memzero(key, sizeof(key));
+
+	free(ct);
+
+	return 0;
+}
+
+static int
+save_seckey(char *fname, unsigned char *k, size_t kz, char *keyfile)
 {
 	FILE *fp;
 	char *hex;
@@ -280,15 +398,15 @@ save_seckey(char *fname, unsigned char *k, size_t kz, char *comment,
 	if ((ct = sodium_malloc(ctlen)) == NULL)
 		err(1, NULL);
 
-	/* Random nonce and salt. */ 
+	/* Random nonce and salt. */
 	randombytes_buf(nonce, sizeof(nonce));
 	randombytes_buf(salt, sizeof(salt));
 
 	/* Read in passphrase. */
 	if (keyfile)
-		read_keyfile(keyfile, passwd, sizeof(passwd));
+		read_passwd_file(passwd, sizeof(passwd), keyfile);
 	else
-		read_key(passwd, sizeof(passwd));
+		read_passwd_tty(passwd, sizeof(passwd), 1);
 
 	/* Generate key from passphrase. */
 	if (crypto_pwhash(key, sizeof(key), passwd, strlen(passwd), salt,
@@ -307,18 +425,15 @@ save_seckey(char *fname, unsigned char *k, size_t kz, char *comment,
 	str_time(now, sizeof(now), t);
 	fprintf(fp, "# %s secret key\n# %s\n", __progname, now);
 
-	if (comment)
-		fprintf(fp, "# %s\n", comment);
-
-	fprintf(fp, "Opslimit: %llu\n", opslimit);
-	fprintf(fp, "Memlimit: %ld\n", memlimit);
+	fprintf(fp, "opslimit: %llu\n", opslimit);
+	fprintf(fp, "memlimit: %ld\n", memlimit);
 
 	/* Salt. */
 	hexsize = sizeof(salt) * 2 + 1;
 	if ((hex = malloc(hexsize)) == NULL)
 		err(1, NULL);
 	sodium_bin2hex(hex, hexsize, salt, sizeof(salt));
-	fprintf(fp, "Salt: %s\n", hex);
+	fprintf(fp, "salt: %s\n", hex);
 	free(hex);
 
 	/* Nonce. */
@@ -326,7 +441,7 @@ save_seckey(char *fname, unsigned char *k, size_t kz, char *comment,
 	if ((hex = malloc(hexsize)) == NULL)
 		err(1, NULL);
 	sodium_bin2hex(hex, hexsize, nonce, sizeof(nonce));
-	fprintf(fp, "Nonce: %s\n", hex);
+	fprintf(fp, "nonce: %s\n", hex);
 	free(hex);
 
 	/* Ciphertext. */
@@ -334,7 +449,7 @@ save_seckey(char *fname, unsigned char *k, size_t kz, char *comment,
 	if ((hex = malloc(hexsize)) == NULL)
 		err(1, NULL);
 	sodium_bin2hex(hex, hexsize, ct, ctlen);
-	fprintf(fp, "Encrypted Key: %s\n", hex);
+	fprintf(fp, "key: %s\n", hex);
 	free(hex);
 
 	sodium_free(ct);
@@ -344,24 +459,27 @@ save_seckey(char *fname, unsigned char *k, size_t kz, char *comment,
 }
 
 static int
-generate_key_pair(char *pub, char *sec, char *key, char *comment)
+generate_key_pair(char *pub, char *sec, char *key)
 {
 	unsigned char pk[crypto_box_PUBLICKEYBYTES];
 	unsigned char sk[crypto_box_SECRETKEYBYTES];
 
 	crypto_box_keypair(pk, sk);
 
-	save_pubkey(pub, pk, sizeof(pk), comment);
+	save_seckey(sec, sk, sizeof(sk), key);
+	sodium_memzero(sk, sizeof(sk));
 
-	save_seckey(sec, sk, sizeof(sk), comment, key);
-	explicit_bzero(sk, sizeof(sk));
+	save_pubkey(pub, pk, sizeof(pk));
+
+	load_seckey(sec, sk, key);
 
 	return 0;
 }
 
 static int
-secret_key(char *infile, char *outfile, int enc)
+secret_key(char *infile, char *outfile, int enc, char *keyfile)
 {
+	char passwd[MAX_PASSWD];
 	struct cipher_info *ci;
 	unsigned char salt[crypto_pwhash_SALTBYTES];
 
@@ -384,8 +502,19 @@ secret_key(char *infile, char *outfile, int enc)
 	if (verbose)
 		printf("opslimit = %lld, memlimit = %ld\n", opslimit, memlimit);
 
-	/* Get the key from passphrase. */
-	kdf(salt, 1, enc ? 1 : 0, ci->key);
+	/* Read in passphrase. */
+	if (keyfile)
+		read_passwd_file(passwd, sizeof(passwd), keyfile);
+	else
+		read_passwd_tty(passwd, sizeof(passwd), enc ? 1 : 0);
+
+	/* Generate key from passphrase. */
+	if (crypto_pwhash(ci->key, sizeof(ci->key), passwd, strlen(passwd),
+	    salt, opslimit, memlimit, crypto_pwhash_ALG_DEFAULT) != 0)
+		errx(1, "libsodium crypto_pwhash: out of memory");
+
+	/* Clear passphrase from memory. */
+	sodium_memzero(passwd, sizeof(passwd));
 
 	if (verbose) {
 		print_value("salt", salt, sizeof(salt));
@@ -467,33 +596,6 @@ cipher(struct cipher_info *ci)
 }
 
 static void
-kdf(uint8_t *salt, int allowstdin, int confirm, uint8_t *key)
-{
-	char pass[MAX_PASSWD];
-	int rppflags = RPP_ECHO_OFF;
-
-	if (allowstdin && !isatty(STDIN_FILENO))
-		rppflags |= RPP_STDIN;
-	if (!readpassphrase("passphrase: ", pass, sizeof(pass), rppflags))
-		errx(1, "unable to read passphrase");
-	if (strlen(pass) == 0)
-		errx(1, "please provide a password");
-	if (confirm && !(rppflags & RPP_STDIN)) {
-		char pass2[MAX_PASSWD];
-		if (!readpassphrase("confirm passphrase: ", pass2,
-		    sizeof(pass2), rppflags))
-			errx(1, "unable to read passphrase");
-		if (strcmp(pass, pass2) != 0)
-			errx(1, "passwords don't match");
-		sodium_memzero(pass2, sizeof(pass2));
-	}
-	if (crypto_pwhash(key, crypto_secretbox_KEYBYTES, pass, strlen(pass),
-	    salt, opslimit, memlimit, crypto_pwhash_ALG_DEFAULT) == -1)
-		errx(1, "crypto_pwhash error");
-	sodium_memzero(pass, sizeof(pass));
-}
-
-static void
 print_value(char *name, unsigned char *bin, int size)
 {
 	char hex[MAX_LINE];
@@ -532,46 +634,129 @@ set_mode(int mode)
 }
 
 static int
-read_keyfile(char *keyfile, char *passwd, size_t pwsize)
+read_passwd_file(char *pass, size_t size, char *fname)
 {
 	FILE *fp;
 	char *line;
+	int linecount;
 	size_t linesize;
 	ssize_t linelen;
+	size_t passlen;
 
-	if ((fp = fopen(keyfile, "r")) == NULL)
-		err(1, "%s", keyfile);
+	if ((fp = fopen(fname, "r")) == NULL)
+		err(1, "%s", fname);
 	linesize = MAX_LINE;
 	if ((line = sodium_malloc(linesize)) == NULL)
 		err(1, NULL);
+	linecount = 0;
+	memset(pass, 0, size);
 	while ((linelen = getline(&line, &linesize, fp)) != -1) {
 		line[strcspn(line, "\n")] = '\0';
-		strlcpy(passwd, line, pwsize);
+		strlcpy(pass, line, size);
 		sodium_memzero(line, linesize);
+		linecount++;
 	}
+	if (linecount > 1)
+		errx(1, "%s contains multiple lines (%d)", fname, linecount);
+	passlen = strlen(pass);
+	if (passlen == 0)
+		errx(1, "please provide a password");
+	if (passlen < MIN_PASSWD)
+		errx(1, "password too small");
 	sodium_free(line);
 	if (ferror(fp))
-		err(1, "%s", keyfile);
+		err(1, "%s", fname);
 	fclose(fp);
 
 	return 0;
 }
 
 static int
-read_key(char *passwd, size_t size)
+read_passwd_tty(char *pass, size_t size, int confirm)
 {
+	char pass2[MAX_PASSWD];
+	int flags;
+	size_t passlen;
+
+	flags = RPP_ECHO_OFF | RPP_REQUIRE_TTY;
+
+	if (!readpassphrase("passphrase: ", pass, size, flags))
+		errx(1, "unable to read passphrase");
+	passlen = strlen(pass);
+	if (passlen == 0)
+		errx(1, "please provide a password");
+	if (confirm) {
+		if (passlen < MIN_PASSWD)
+			errx(1, "password too small");
+		if (!readpassphrase("confirm passphrase: ", pass2,
+		    sizeof(pass2), flags))
+			errx(1, "unable to read passphrase");
+		if (strcmp(pass, pass2) != 0)
+			errx(1, "passwords don't match");
+		sodium_memzero(pass2, sizeof(pass2));
+	}
+
 	return 0;
 }
 
 static char *
-str_time(char *s, size_t z, time_t t)
+str_time(char *str, size_t size, time_t t)
 {
 	struct tm tm;
 
-	memset(s, 0, z);
+	memset(str, 0, size);
 	memset(&tm, 0, sizeof(tm));
 	localtime_r(&t, &tm);
-	strftime(s, z - 1, "%Y-%m-%dT%H:%M:%S%z", &tm);
+	strftime(str, size - 1, "%Y-%m-%dT%H:%M:%S%z", &tm);
 
-	return s;
+	return str;
+}
+
+int
+nvp_add(char *line, char *delimiter, struct nvplist *head)
+{
+	char *p;
+	size_t len;
+	struct nvp *np;
+
+	if ((p = strstr(line, delimiter)) == NULL)
+		errx(1, "invalid line %s", line);
+	if ((np = malloc(sizeof(struct nvp))) == NULL)
+		err(1, NULL);
+	len = p - line;
+	p += strlen(delimiter);
+	np->name = strndup(line, len);
+	np->value = strdup(p);
+	SLIST_INSERT_HEAD(head, np, entries);
+
+	return 0;
+}
+
+void
+nvp_free(struct nvplist *head)
+{
+	struct nvp *np;
+
+	while (!SLIST_EMPTY(head)) {
+		np = SLIST_FIRST(head);
+		SLIST_REMOVE_HEAD(head, entries);
+		free(np->name);
+		free(np->value);
+		free(np);
+	}
+}
+
+int
+nvp_find(const char *name, struct nvplist *head, struct nvp **item)
+{
+	struct nvp *np;
+
+	SLIST_FOREACH(np, head, entries) {
+		if (strcmp(np->name, name) == 0) {
+			*item = np;
+			return 0;
+		}
+	}
+
+	return 1;
 }

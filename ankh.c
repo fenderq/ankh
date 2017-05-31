@@ -80,6 +80,7 @@ void		 nvp_free(struct nvplist *);
 int		 nvp_find(const char *, struct nvplist *, struct nvp **);
 static int	 load_seckey(char *, unsigned char *, char *);
 static int	 save_seckey(char *, unsigned char *, size_t, char *);
+static int	 save_pubkey(char *, unsigned char *, size_t);
 
 int
 main(int argc, char *argv[])
@@ -229,6 +230,69 @@ usage(void)
 }
 
 static int
+load_pubkey(char *fname, unsigned char *k, size_t kz)
+{
+	FILE *fp;
+	char *line;
+	const char *name;
+	size_t linesize;
+	ssize_t linelen;
+	struct nvp *np;
+	struct nvplist lines;
+
+	SLIST_INIT(&lines);
+
+	/* Open the file. */
+	if ((fp = fopen(fname, "r")) == NULL)
+		err(1, "%s", fname);
+
+	/* Create a tmp line. */
+	linesize = MAX_LINE;
+	if ((line = malloc(linesize)) == NULL)
+		err(1, NULL);
+
+	/* Add each line to a name/value list. */
+	while ((linelen = getline(&line, &linesize, fp)) != -1) {
+		if (line[0] == '#')
+			continue;
+		line[strcspn(line, "\n")] = '\0';
+		nvp_add(line, ": ", &lines);
+		printf("%s\n", line);
+	}
+	if (ferror(fp))
+		err(1, "%s", fname);
+
+	/* Free tmp line and close file. */
+	free(line);
+	fclose(fp);
+
+	/* Get name/value pairs. */
+	name = "key";
+	if (nvp_find(name, &lines, &np) != 0)
+		errx(1, "missing %s in %s", name, fname);
+	if (sodium_hex2bin(k, kz, np->value, strlen(np->value),
+	    NULL, NULL, NULL) != 0)
+		errx(1, "invalid data: %s", np->value);
+
+	name = "key";
+	if (nvp_find(name, &lines, &np) != 0)
+		errx(1, "missing %s in %s", name, fname);
+	if (sodium_hex2bin(k, kz, np->value, strlen(np->value),
+	    NULL, NULL, NULL) != 0)
+		errx(1, "invalid data: %s", np->value);
+
+	/* Free lines. */
+	nvp_free(&lines);
+
+	if (verbose) {
+		printf("reading file %s ...\n", fname);
+		print_value("key", k, kz);
+	}
+
+	return 0;
+}
+
+static int
 save_pubkey(char *fname, unsigned char *k, size_t kz)
 {
 	FILE *fp;
@@ -246,7 +310,7 @@ save_pubkey(char *fname, unsigned char *k, size_t kz)
 	time(&t);
 	str_time(now, sizeof(now), t);
 	fprintf(fp, "# %s public key\n# %s\n", __progname, now);
-	fprintf(fp, "Key: %s\n", hex);
+	fprintf(fp, "key: %s\n", hex);
 	fclose(fp);
 	free(hex);
 
@@ -472,6 +536,7 @@ generate_key_pair(char *pub, char *sec, char *key)
 	save_pubkey(pub, pk, sizeof(pk));
 
 	load_seckey(sec, sk, key);
+	load_pubkey(pub, pk, sizeof(pk));
 
 	return 0;
 }
@@ -487,9 +552,11 @@ secret_key(char *infile, char *outfile, int enc, char *keyfile)
 		err(1, NULL);
 	ci->enc = enc;
 
-	/* Open input file. */
-	if ((ci->fin = fopen(infile, "r")) == NULL)
-		err(1, "%s", infile);
+	/* Open input. */
+	if (infile == NULL)
+		ci->fin = stdin;
+	else if ((ci->fin = fopen(infile, "r")) == NULL)
+			err(1, "%s", infile);
 
 	/* Get the salt. */
 	if (enc)
@@ -521,8 +588,10 @@ secret_key(char *infile, char *outfile, int enc, char *keyfile)
 		print_value("key", ci->key, sizeof(ci->key));
 	}
 
-	/* Open output file. */
-	if ((ci->fout = fopen(outfile, "w")) == NULL)
+	/* Open output. */
+	if (outfile == NULL)
+		ci->fout = stdout;
+	else if ((ci->fout = fopen(outfile, "w")) == NULL)
 		err(1, "%s", outfile);
 
 	if (enc) {
@@ -538,8 +607,10 @@ secret_key(char *infile, char *outfile, int enc, char *keyfile)
 	cipher(ci);
 
 	/* Close files, zero and free memory. */
-	fclose(ci->fin);
-	fclose(ci->fout);
+	if (ci->fin != stdin)
+		fclose(ci->fin);
+	if (ci->fout != stdout)
+		fclose(ci->fout);
 	sodium_memzero(ci, sizeof(struct cipher_info));
 	free(ci);
 

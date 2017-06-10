@@ -257,7 +257,6 @@ load_pubkey(char *fname, unsigned char *k, size_t kz)
 			continue;
 		line[strcspn(line, "\n")] = '\0';
 		nvp_add(line, ": ", &lines);
-		printf("%s\n", line);
 	}
 	if (ferror(fp))
 		err(1, "%s", fname);
@@ -267,13 +266,6 @@ load_pubkey(char *fname, unsigned char *k, size_t kz)
 	fclose(fp);
 
 	/* Get name/value pairs. */
-	name = "key";
-	if (nvp_find(name, &lines, &np) != 0)
-		errx(1, "missing %s in %s", name, fname);
-	if (sodium_hex2bin(k, kz, np->value, strlen(np->value),
-	    NULL, NULL, NULL) != 0)
-		errx(1, "invalid data: %s", np->value);
-
 	name = "key";
 	if (nvp_find(name, &lines, &np) != 0)
 		errx(1, "missing %s in %s", name, fname);
@@ -352,7 +344,6 @@ load_seckey(char *fname, unsigned char *sk, char *keyfile)
 			continue;
 		line[strcspn(line, "\n")] = '\0';
 		nvp_add(line, ": ", &lines);
-		printf("%s\n", line);
 	}
 	if (ferror(fp))
 		err(1, "%s", fname);
@@ -531,12 +522,14 @@ generate_key_pair(char *pub, char *sec, char *key)
 	crypto_box_keypair(pk, sk);
 
 	save_seckey(sec, sk, sizeof(sk), key);
-	sodium_memzero(sk, sizeof(sk));
-
 	save_pubkey(pub, pk, sizeof(pk));
+
+	sodium_memzero(sk, sizeof(sk));
 
 	load_seckey(sec, sk, key);
 	load_pubkey(pub, pk, sizeof(pk));
+
+	sodium_memzero(sk, sizeof(sk));
 
 	return 0;
 }

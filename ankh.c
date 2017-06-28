@@ -32,6 +32,7 @@
 #define PASSWD_MAX 128
 #define PASSWD_MIN 8
 #define STRING_MAX 256
+
 #define MAJ 2
 #define MIN 0
 #define REV 1
@@ -45,13 +46,6 @@ enum command {
 	CMD_SECRET_KEY,
 	CMD_SIGNATURE,
 	CMD_VERSION
-};
-
-SLIST_HEAD(nvplist, nvp);
-struct nvp {
-	char *name;
-	char *value;
-	SLIST_ENTRY(nvp) entries;
 };
 
 struct ankh_header {
@@ -82,6 +76,13 @@ struct ankh {
 	unsigned long long opslimit;
 };
 
+SLIST_HEAD(nvplist, nvp);
+struct nvp {
+	char *name;
+	char *value;
+	SLIST_ENTRY(nvp) entries;
+};
+
 extern char *__progname;
 extern char *optarg;
 
@@ -94,28 +95,24 @@ unsigned char magic[] = {
 
 __dead void usage(void);
 
-int		 do_command(struct ankh *);
-
-int		 hdr_read(struct ankh *, struct ankh_header *);
-int		 hdr_write(struct ankh *, struct ankh_header *);
-
-static int	 cipher(struct ankh *);
-static int	 generate_key_pair(struct ankh *);
-static int	 read_passwd_tty(char *, size_t, int);
-static int	 read_passwd_file(char *, size_t, char *);
-static int	 secret_key(struct ankh *);
-static void	 print_value(char *, unsigned char *, int);
-static void	 set_mode(struct ankh *, int);
-static char	*str_time(char *, size_t, time_t);
-
-int		 nvp_add(char *, char *, struct nvplist *);
-void		 nvp_free(struct nvplist *);
-int		 nvp_find(const char *, struct nvplist *, struct nvp **);
-
-static int	 load_pubkey(struct ankh *);
-static int	 load_seckey(struct ankh *);
-static int	 save_pubkey(struct ankh *);
-static int	 save_seckey(struct ankh *);
+int	 cipher(struct ankh *);
+int	 do_command(struct ankh *);
+int	 generate_key_pair(struct ankh *);
+int	 hdr_read(struct ankh *, struct ankh_header *);
+int	 hdr_write(struct ankh *, struct ankh_header *);
+int	 load_pubkey(struct ankh *);
+int	 load_seckey(struct ankh *);
+int	 nvp_add(char *, char *, struct nvplist *);
+int	 nvp_find(const char *, struct nvplist *, struct nvp **);
+void	 nvp_free(struct nvplist *);
+void	 print_value(char *, unsigned char *, int);
+int	 read_passwd_file(char *, size_t, char *);
+int	 read_passwd_tty(char *, size_t, int);
+int	 save_pubkey(struct ankh *);
+int	 save_seckey(struct ankh *);
+int	 secret_key(struct ankh *);
+void	 set_mode(struct ankh *, int);
+char	*str_time(char *, size_t, time_t);
 
 int
 main(int argc, char *argv[])
@@ -214,6 +211,72 @@ main(int argc, char *argv[])
 	exit(EXIT_SUCCESS);
 }
 
+void
+usage(void)
+{
+	/*
+		ankh K (secret key) [-dikmo]
+		ankh G (generate key pair) [-km] -p -s
+		ankh B (sealed box) [-diko] -p -s
+		ankh P (public key) [-diko] -p -s
+		ankh S (signature) [-iko] -p -s
+		ankh H (hash) [-io]
+		ankh V (version)
+	 */
+	fprintf(stderr, "usage: %s [-dv] [-m mode] infile outfile\n",
+	    __progname);
+	exit(EXIT_FAILURE);
+}
+
+int
+cipher(struct ankh *a)
+{
+	size_t bufsize;
+	size_t bytes;
+	size_t rlen;
+	size_t wlen;
+	unsigned char *buf;
+	unsigned char n[crypto_secretbox_NONCEBYTES];
+
+	bufsize = BUFSIZE;
+	if ((buf = malloc(bufsize)) == NULL)
+		err(1, NULL);
+
+	/*
+	 * Determine how much we want to read based on operation.
+	 * We need to reserve space for the MAC.
+	 */
+	rlen = a->enc ? bufsize - crypto_secretbox_MACBYTES : bufsize;
+
+	explicit_bzero(n, sizeof(n));
+	while ((bytes = fread(buf, 1, rlen, a->fin)) != 0) {
+		sodium_increment(n, sizeof(n));
+		/*
+		 * Memory may overlap for both encrypt and decrypt.
+		 * Ciphertext writes extra bytes for the MAC.
+		 * Plaintext only writes the original data.
+		 */
+		if (a->enc) {
+			crypto_secretbox_easy(buf, buf, bytes, n, a->key);
+			wlen = bytes + crypto_secretbox_MACBYTES;
+		} else {
+			if (crypto_secretbox_open_easy(
+			    buf, buf, bytes, n, a->key) != 0)
+				errx(1, "invalid message data");
+			wlen = bytes - crypto_secretbox_MACBYTES;
+		}
+		if (fwrite(buf, wlen, 1, a->fout) == 0)
+			errx(1, "error writing to output stream");
+	}
+	if (ferror(a->fin))
+		errx(1, "error reading from input stream");
+
+	explicit_bzero(buf, bufsize);
+	free(buf);
+
+	return 0;
+}
+
 int
 do_command(struct ankh *a)
 {
@@ -244,24 +307,72 @@ do_command(struct ankh *a)
 	return 0;
 }
 
-void
-usage(void)
+int
+generate_key_pair(struct ankh *a)
 {
-	/*
-		ankh K (secret key) [-dikmo]
-		ankh G (generate key pair) [-km] -p -s
-		ankh B (sealed box) [-diko] -p -s
-		ankh P (public key) [-diko] -p -s
-		ankh S (signature) [-iko] -p -s
-		ankh H (hash) [-io]
-		ankh V (version)
-	 */
-	fprintf(stderr, "usage: %s [-dv] [-m mode] infile outfile\n",
-	    __progname);
-	exit(EXIT_FAILURE);
+	crypto_box_keypair(a->pubkey, a->seckey);
+
+	if (verbose)
+		printf("saving files ...\n");
+
+	save_seckey(a);
+	save_pubkey(a);
+
+	if (verbose) {
+		print_value("pub", a->pubkey, sizeof(a->pubkey));
+		print_value("sec", a->seckey, sizeof(a->seckey));
+		printf("loading files ...\n");
+	}
+
+	load_seckey(a);
+	load_pubkey(a);
+
+	if (verbose) {
+		print_value("pub", a->pubkey, sizeof(a->pubkey));
+		print_value("sec", a->seckey, sizeof(a->seckey));
+	}
+
+	explicit_bzero(a->seckey, sizeof(a->seckey));
+
+	return 0;
 }
 
-static int
+int
+hdr_read(struct ankh *a, struct ankh_header *h)
+{
+	/* Read the header. */
+	if (fread(h, sizeof(struct ankh_header), 1, a->fin) != 1)
+		errx(1, "failure to read header");
+
+	/* Verify this is an ankh file. */
+	if (memcmp(h->id, magic, sizeof(h->id)) != 0)
+		errx(1, "invalid %s file", __progname);
+
+	/* Verify file type matches command. */
+	if (h->cmd != a->cmd)
+		errx(1, "invalid file type %d for command %d", h->cmd, a->cmd);
+
+	return 0;
+}
+
+int
+hdr_write(struct ankh *a, struct ankh_header *h)
+{
+	memset(h, 0, sizeof(struct ankh_header));
+
+	memcpy(h->id, magic, sizeof(h->id));
+	h->maj = MAJ;
+	h->min = MIN;
+	h->rev = REV;
+	h->cmd = a->cmd;
+
+	if (fwrite(h, sizeof(struct ankh_header), 1, a->fout) != 1)
+		errx(1, "failure to write header");
+
+	return 0;
+}
+
+int
 load_pubkey(struct ankh *a)
 {
 	FILE *fp;
@@ -311,32 +422,7 @@ load_pubkey(struct ankh *a)
 	return 0;
 }
 
-static int
-save_pubkey(struct ankh *a)
-{
-	FILE *fp;
-	char *hex;
-	char now[STRING_MAX];
-	size_t hexsize;
-	time_t t;
-
-	hexsize = sizeof(a->pubkey) * 2 + 1;
-	if ((hex = malloc(hexsize)) == NULL)
-		err(1, NULL);
-	sodium_bin2hex(hex, hexsize, a->pubkey, sizeof(a->pubkey));
-	if ((fp = fopen(a->pubfile, "w")) == NULL)
-		err(1, "%s", a->pubfile);
-	time(&t);
-	str_time(now, sizeof(now), t);
-	fprintf(fp, "# %s public key\n# %s\n", __progname, now);
-	fprintf(fp, "key: %s\n", hex);
-	fclose(fp);
-	free(hex);
-
-	return 0;
-}
-
-static int
+int
 load_seckey(struct ankh *a)
 {
 	FILE *fp;
@@ -444,7 +530,157 @@ load_seckey(struct ankh *a)
 	return 0;
 }
 
-static int
+int
+nvp_add(char *line, char *delimiter, struct nvplist *head)
+{
+	char *p;
+	size_t len;
+	struct nvp *np;
+
+	if ((p = strstr(line, delimiter)) == NULL)
+		errx(1, "invalid line %s", line);
+	if ((np = malloc(sizeof(struct nvp))) == NULL)
+		err(1, NULL);
+	len = p - line;
+	p += strlen(delimiter);
+	np->name = strndup(line, len);
+	np->value = strdup(p);
+	SLIST_INSERT_HEAD(head, np, entries);
+
+	return 0;
+}
+
+int
+nvp_find(const char *name, struct nvplist *head, struct nvp **item)
+{
+	struct nvp *np;
+
+	SLIST_FOREACH(np, head, entries) {
+		if (strcmp(np->name, name) == 0) {
+			*item = np;
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
+void
+nvp_free(struct nvplist *head)
+{
+	struct nvp *np;
+
+	while (!SLIST_EMPTY(head)) {
+		np = SLIST_FIRST(head);
+		SLIST_REMOVE_HEAD(head, entries);
+		free(np->name);
+		free(np->value);
+		free(np);
+	}
+}
+
+void
+print_value(char *name, unsigned char *bin, int size)
+{
+	char hex[MAX_LINE];
+
+	sodium_bin2hex(hex, sizeof(hex), bin, size);
+	printf("%s = %s\n", name, hex);
+	explicit_bzero(hex, sizeof(hex));
+}
+
+int
+read_passwd_file(char *pass, size_t size, char *fname)
+{
+	FILE *fp;
+	char *line;
+	int linecount;
+	size_t linesize;
+	ssize_t linelen;
+	size_t passlen;
+
+	if ((fp = fopen(fname, "r")) == NULL)
+		err(1, "%s", fname);
+	linesize = MAX_LINE;
+	if ((line = malloc(linesize)) == NULL)
+		err(1, NULL);
+	linecount = 0;
+	memset(pass, 0, size);
+	while ((linelen = getline(&line, &linesize, fp)) != -1) {
+		line[strcspn(line, "\n")] = '\0';
+		strlcpy(pass, line, size);
+		explicit_bzero(line, linesize);
+		linecount++;
+	}
+	if (linecount > 1)
+		errx(1, "%s contains multiple lines (%d)", fname, linecount);
+	passlen = strlen(pass);
+	if (passlen == 0)
+		errx(1, "please provide a password");
+	if (passlen < PASSWD_MIN)
+		errx(1, "password too small");
+	free(line);
+	if (ferror(fp))
+		err(1, "%s", fname);
+	fclose(fp);
+
+	return 0;
+}
+
+int
+read_passwd_tty(char *pass, size_t size, int confirm)
+{
+	char pass2[PASSWD_MAX];
+	int flags;
+	size_t passlen;
+
+	flags = RPP_ECHO_OFF | RPP_REQUIRE_TTY;
+
+	if (!readpassphrase("passphrase: ", pass, size, flags))
+		errx(1, "unable to read passphrase");
+	passlen = strlen(pass);
+	if (passlen == 0)
+		errx(1, "please provide a password");
+	if (confirm) {
+		if (passlen < PASSWD_MIN)
+			errx(1, "password too small");
+		if (!readpassphrase("confirm passphrase: ", pass2,
+		    sizeof(pass2), flags))
+			errx(1, "unable to read passphrase");
+		if (strcmp(pass, pass2) != 0)
+			errx(1, "passwords don't match");
+		explicit_bzero(pass2, sizeof(pass2));
+	}
+
+	return 0;
+}
+
+int
+save_pubkey(struct ankh *a)
+{
+	FILE *fp;
+	char *hex;
+	char now[STRING_MAX];
+	size_t hexsize;
+	time_t t;
+
+	hexsize = sizeof(a->pubkey) * 2 + 1;
+	if ((hex = malloc(hexsize)) == NULL)
+		err(1, NULL);
+	sodium_bin2hex(hex, hexsize, a->pubkey, sizeof(a->pubkey));
+	if ((fp = fopen(a->pubfile, "w")) == NULL)
+		err(1, "%s", a->pubfile);
+	time(&t);
+	str_time(now, sizeof(now), t);
+	fprintf(fp, "# %s public key\n# %s\n", __progname, now);
+	fprintf(fp, "key: %s\n", hex);
+	fclose(fp);
+	free(hex);
+
+	return 0;
+}
+
+int
 save_seckey(struct ankh *a)
 {
 	FILE *fp;
@@ -525,37 +761,7 @@ save_seckey(struct ankh *a)
 	return 0;
 }
 
-static int
-generate_key_pair(struct ankh *a)
-{
-	crypto_box_keypair(a->pubkey, a->seckey);
-
-	if (verbose)
-		printf("saving files ...\n");
-
-	save_seckey(a);
-	save_pubkey(a);
-
-	if (verbose) {
-		print_value("pub", a->pubkey, sizeof(a->pubkey));
-		print_value("sec", a->seckey, sizeof(a->seckey));
-		printf("loading files ...\n");
-	}
-
-	load_seckey(a);
-	load_pubkey(a);
-
-	if (verbose) {
-		print_value("pub", a->pubkey, sizeof(a->pubkey));
-		print_value("sec", a->seckey, sizeof(a->seckey));
-	}
-
-	explicit_bzero(a->seckey, sizeof(a->seckey));
-
-	return 0;
-}
-
-static int
+int
 secret_key(struct ankh *a)
 {
 	struct ankh_header hdr;
@@ -637,72 +843,13 @@ secret_key(struct ankh *a)
 	return 0;
 }
 
-static int
-cipher(struct ankh *a)
-{
-	size_t bufsize;
-	size_t bytes;
-	size_t rlen;
-	size_t wlen;
-	unsigned char *buf;
-	unsigned char n[crypto_secretbox_NONCEBYTES];
-
-	bufsize = BUFSIZE;
-	if ((buf = malloc(bufsize)) == NULL)
-		err(1, NULL);
-
-	/*
-	 * Determine how much we want to read based on operation.
-	 * We need to reserve space for the MAC.
-	 */
-	rlen = a->enc ? bufsize - crypto_secretbox_MACBYTES : bufsize;
-
-	explicit_bzero(n, sizeof(n));
-	while ((bytes = fread(buf, 1, rlen, a->fin)) != 0) {
-		sodium_increment(n, sizeof(n));
-		/*
-		 * Memory may overlap for both encrypt and decrypt.
-		 * Ciphertext writes extra bytes for the MAC.
-		 * Plaintext only writes the original data.
-		 */
-		if (a->enc) {
-			crypto_secretbox_easy(buf, buf, bytes, n, a->key);
-			wlen = bytes + crypto_secretbox_MACBYTES;
-		} else {
-			if (crypto_secretbox_open_easy(
-			    buf, buf, bytes, n, a->key) != 0)
-				errx(1, "invalid message data");
-			wlen = bytes - crypto_secretbox_MACBYTES;
-		}
-		if (fwrite(buf, wlen, 1, a->fout) == 0)
-			errx(1, "error writing to output stream");
-	}
-	if (ferror(a->fin))
-		errx(1, "error reading from input stream");
-
-	explicit_bzero(buf, bufsize);
-	free(buf);
-
-	return 0;
-}
-
-static void
-print_value(char *name, unsigned char *bin, int size)
-{
-	char hex[MAX_LINE];
-
-	sodium_bin2hex(hex, sizeof(hex), bin, size);
-	printf("%s = %s\n", name, hex);
-	explicit_bzero(hex, sizeof(hex));
-}
-
 /*
  * Set the mode.
  * 1) Interactive 2) Moderate 3) Sensitive
  * This will set parameters for the key derivation function.
  * See libsodium crypto_pwhash documentation.
  */
-static void
+void
 set_mode(struct ankh *a, int mode)
 {
 	switch (mode) {
@@ -724,73 +871,7 @@ set_mode(struct ankh *a, int mode)
 	}
 }
 
-static int
-read_passwd_file(char *pass, size_t size, char *fname)
-{
-	FILE *fp;
-	char *line;
-	int linecount;
-	size_t linesize;
-	ssize_t linelen;
-	size_t passlen;
-
-	if ((fp = fopen(fname, "r")) == NULL)
-		err(1, "%s", fname);
-	linesize = MAX_LINE;
-	if ((line = malloc(linesize)) == NULL)
-		err(1, NULL);
-	linecount = 0;
-	memset(pass, 0, size);
-	while ((linelen = getline(&line, &linesize, fp)) != -1) {
-		line[strcspn(line, "\n")] = '\0';
-		strlcpy(pass, line, size);
-		explicit_bzero(line, linesize);
-		linecount++;
-	}
-	if (linecount > 1)
-		errx(1, "%s contains multiple lines (%d)", fname, linecount);
-	passlen = strlen(pass);
-	if (passlen == 0)
-		errx(1, "please provide a password");
-	if (passlen < PASSWD_MIN)
-		errx(1, "password too small");
-	free(line);
-	if (ferror(fp))
-		err(1, "%s", fname);
-	fclose(fp);
-
-	return 0;
-}
-
-static int
-read_passwd_tty(char *pass, size_t size, int confirm)
-{
-	char pass2[PASSWD_MAX];
-	int flags;
-	size_t passlen;
-
-	flags = RPP_ECHO_OFF | RPP_REQUIRE_TTY;
-
-	if (!readpassphrase("passphrase: ", pass, size, flags))
-		errx(1, "unable to read passphrase");
-	passlen = strlen(pass);
-	if (passlen == 0)
-		errx(1, "please provide a password");
-	if (confirm) {
-		if (passlen < PASSWD_MIN)
-			errx(1, "password too small");
-		if (!readpassphrase("confirm passphrase: ", pass2,
-		    sizeof(pass2), flags))
-			errx(1, "unable to read passphrase");
-		if (strcmp(pass, pass2) != 0)
-			errx(1, "passwords don't match");
-		explicit_bzero(pass2, sizeof(pass2));
-	}
-
-	return 0;
-}
-
-static char *
+char *
 str_time(char *str, size_t size, time_t t)
 {
 	struct tm tm;
@@ -801,88 +882,4 @@ str_time(char *str, size_t size, time_t t)
 	strftime(str, size - 1, "%Y-%m-%dT%H:%M:%S%z", &tm);
 
 	return str;
-}
-
-int
-nvp_add(char *line, char *delimiter, struct nvplist *head)
-{
-	char *p;
-	size_t len;
-	struct nvp *np;
-
-	if ((p = strstr(line, delimiter)) == NULL)
-		errx(1, "invalid line %s", line);
-	if ((np = malloc(sizeof(struct nvp))) == NULL)
-		err(1, NULL);
-	len = p - line;
-	p += strlen(delimiter);
-	np->name = strndup(line, len);
-	np->value = strdup(p);
-	SLIST_INSERT_HEAD(head, np, entries);
-
-	return 0;
-}
-
-void
-nvp_free(struct nvplist *head)
-{
-	struct nvp *np;
-
-	while (!SLIST_EMPTY(head)) {
-		np = SLIST_FIRST(head);
-		SLIST_REMOVE_HEAD(head, entries);
-		free(np->name);
-		free(np->value);
-		free(np);
-	}
-}
-
-int
-nvp_find(const char *name, struct nvplist *head, struct nvp **item)
-{
-	struct nvp *np;
-
-	SLIST_FOREACH(np, head, entries) {
-		if (strcmp(np->name, name) == 0) {
-			*item = np;
-			return 0;
-		}
-	}
-
-	return 1;
-}
-
-int
-hdr_read(struct ankh *a, struct ankh_header *h)
-{
-	/* Read the header. */
-	if (fread(h, sizeof(struct ankh_header), 1, a->fin) != 1)
-		errx(1, "failure to read header");
-
-	/* Verify this is an ankh file. */
-	if (memcmp(h->id, magic, sizeof(h->id)) != 0)
-		errx(1, "invalid %s file", __progname);
-
-	/* Verify file type matches command. */
-	if (h->cmd != a->cmd)
-		errx(1, "invalid file type %d for command %d", h->cmd, a->cmd);
-
-	return 0;
-}
-
-int
-hdr_write(struct ankh *a, struct ankh_header *h)
-{
-	memset(h, 0, sizeof(struct ankh_header));
-
-	memcpy(h->id, magic, sizeof(h->id));
-	h->maj = MAJ;
-	h->min = MIN;
-	h->rev = REV;
-	h->cmd = a->cmd;
-
-	if (fwrite(h, sizeof(struct ankh_header), 1, a->fout) != 1)
-		errx(1, "failure to write header");
-
-	return 0;
 }

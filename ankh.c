@@ -83,7 +83,6 @@ struct nvp {
 	SLIST_ENTRY(nvp) entries;
 };
 
-extern char *__progname;
 extern char *optarg;
 
 int verbose;
@@ -225,8 +224,13 @@ usage(void)
 		ankh H (hash) [-io]
 		ankh V (version)
 	 */
-	fprintf(stderr, "usage: %s [-dv] [-m mode] infile outfile\n",
-	    __progname);
+	fprintf(stderr, "usage:"
+	    "\t%1$s -K [-dikmo]\n"
+	    "\t%1$s -G [-km] -s seckey -p pubkey\n"
+	    "\t%1$s -B [-diko] -s seckey -p pubkey\n"
+	    "\t%1$s -V\n",
+	    getprogname());
+
 	exit(EXIT_FAILURE);
 }
 
@@ -302,7 +306,7 @@ do_command(struct ankh *a)
 	case CMD_SIGNATURE:
 		break;
 	case CMD_VERSION:
-		printf("%s %d.%d.%d (libsodium %s)\n", __progname,
+		printf("%s %d.%d.%d (libsodium %s)\n", getprogname(),
 		    MAJ, MIN, REV, sodium_version_string());
 		break;
 	}
@@ -331,7 +335,7 @@ hdr_read(struct ankh *a, struct ankh_header *h)
 
 	/* Verify this is an ankh file. */
 	if (memcmp(h->id, magic, sizeof(h->id)) != 0)
-		errx(1, "invalid %s file", __progname);
+		errx(1, "invalid %s file", getprogname());
 
 	/* Verify file type matches command. */
 	if (h->cmd != a->cmd)
@@ -492,7 +496,7 @@ load_seckey(struct ankh *a)
 	if (a->keyfile[0] != '\0')
 		read_passwd_file(a->passwd, sizeof(a->passwd), a->keyfile);
 	else
-		read_passwd_tty(a->passwd, sizeof(a->passwd), 1);
+		read_passwd_tty(a->passwd, sizeof(a->passwd), 0);
 
 	/* Generate key from passphrase. */
 	if (crypto_pwhash(a->key, sizeof(a->key), a->passwd, strlen(a->passwd),
@@ -657,7 +661,7 @@ save_pubkey(struct ankh *a)
 		err(1, "%s", a->pubfile);
 	time(&t);
 	str_time(now, sizeof(now), t);
-	fprintf(fp, "# %s public key\n# %s\n", __progname, now);
+	fprintf(fp, "# %s public key\n# %s\n", getprogname(), now);
 	fprintf(fp, "key: %s\n", hex);
 	fclose(fp);
 	free(hex);
@@ -711,7 +715,7 @@ save_seckey(struct ankh *a)
 	/* Write our secret key file. */
 	time(&t);
 	str_time(now, sizeof(now), t);
-	fprintf(fp, "# %s secret key\n# %s\n", __progname, now);
+	fprintf(fp, "# %s secret key\n# %s\n", getprogname(), now);
 
 	fprintf(fp, "opslimit: %llu\n", a->opslimit);
 	fprintf(fp, "memlimit: %ld\n", a->memlimit);

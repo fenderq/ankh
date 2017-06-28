@@ -743,7 +743,8 @@ save_seckey(struct ankh *a)
 }
 
 /*
- * Sealed Box ie. Ransomware
+ * Sealed Box (anonymous) using public key cryptography.
+ * X25519, XSalsa20, Poly1305.
  */
 int
 sealed_box(struct ankh *a)
@@ -802,6 +803,10 @@ sealed_box(struct ankh *a)
 	return 0;
 }
 
+/*
+ * Standard IO encrypt/decrypt using a passphrase.
+ * Argon2i, XSalsa20, Poly1305.
+ */
 int
 secret_key(struct ankh *a)
 {

@@ -25,5 +25,7 @@ test: ${PROG}
 	${PROG} -K -v -d -i bar.bin -o foo.bin -m ${mode} -k ${secret}
 	sha256 -c SHA256
 	${PROG} -G -v -p public.key -s secret.key -m ${mode} -k ${secret}
+	${PROG} -B -v -i foo.bin -o bar.bin -p public.key -k ${secret}
+	${PROG} -B -v -i bar.bin -o foo.bin -p public.key -s secret.key -k ${secret} -d
 
 .include <bsd.prog.mk>

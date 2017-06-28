@@ -87,6 +87,7 @@ extern char *__progname;
 extern char *optarg;
 
 int verbose;
+struct ankh *clrptr;
 
 unsigned char magic[] = {
 	0x9f, 0x29, 0x50, 0x63, 0xc0, 0x86, 0xa4, 0x0f,
@@ -110,6 +111,7 @@ int	 read_passwd_file(char *, size_t, char *);
 int	 read_passwd_tty(char *, size_t, int);
 int	 save_pubkey(struct ankh *);
 int	 save_seckey(struct ankh *);
+int	 sealed_box(struct ankh *);
 int	 secret_key(struct ankh *);
 void	 set_mode(struct ankh *, int);
 char	*str_time(char *, size_t, time_t);
@@ -248,7 +250,7 @@ cipher(struct ankh *a)
 	 */
 	rlen = a->enc ? bufsize - crypto_secretbox_MACBYTES : bufsize;
 
-	explicit_bzero(n, sizeof(n));
+	memset(n, 0, sizeof(n));
 	while ((bytes = fread(buf, 1, rlen, a->fin)) != 0) {
 		sodium_increment(n, sizeof(n));
 		/*
@@ -292,6 +294,7 @@ do_command(struct ankh *a)
 	case CMD_PUBLIC_KEY:
 		break;
 	case CMD_SEALED_BOX:
+		sealed_box(a);
 		break;
 	case CMD_SECRET_KEY:
 		secret_key(a);
@@ -312,26 +315,8 @@ generate_key_pair(struct ankh *a)
 {
 	crypto_box_keypair(a->pubkey, a->seckey);
 
-	if (verbose)
-		printf("saving files ...\n");
-
 	save_seckey(a);
 	save_pubkey(a);
-
-	if (verbose) {
-		print_value("pub", a->pubkey, sizeof(a->pubkey));
-		print_value("sec", a->seckey, sizeof(a->seckey));
-		printf("loading files ...\n");
-	}
-
-	load_seckey(a);
-	load_pubkey(a);
-
-	if (verbose) {
-		print_value("pub", a->pubkey, sizeof(a->pubkey));
-		print_value("sec", a->seckey, sizeof(a->seckey));
-	}
-
 	explicit_bzero(a->seckey, sizeof(a->seckey));
 
 	return 0;
@@ -701,8 +686,8 @@ save_seckey(struct ankh *a)
 		err(1, NULL);
 
 	/* Random nonce and salt. */
-	randombytes_buf(a->nonce, sizeof(a->nonce));
-	randombytes_buf(a->salt, sizeof(a->salt));
+	arc4random_buf(a->nonce, sizeof(a->nonce));
+	arc4random_buf(a->salt, sizeof(a->salt));
 
 	/* Read in passphrase. */
 	if (a->keyfile[0] != '\0')
@@ -761,6 +746,76 @@ save_seckey(struct ankh *a)
 	return 0;
 }
 
+/*
+ * Sealed Box ie. Ransomware
+ */
+int
+sealed_box(struct ankh *a)
+{
+	struct ankh_header hdr;
+	size_t ctlen;
+	unsigned char *ct;
+
+	memset(&hdr, 0, sizeof(hdr));
+
+	/* Open input. */
+	if (a->infile[0] == '\0')
+		a->fin = stdin;
+	else if ((a->fin = fopen(a->infile, "r")) == NULL)
+			err(1, "%s", a->infile);
+
+	/* Open output. */
+	if (a->outfile[0] == '\0')
+		a->fout = stdout;
+	else if ((a->fout = fopen(a->outfile, "w")) == NULL)
+		err(1, "%s", a->outfile);
+
+	ctlen = sizeof(a->key) + crypto_box_SEALBYTES;
+	if ((ct = malloc(ctlen)) == NULL)
+		err(1, NULL);
+
+	if (a->enc) {
+		hdr_write(a, &hdr);
+
+		load_pubkey(a);
+
+		arc4random_buf(a->key, sizeof(a->key));
+		crypto_box_seal(ct, a->key, sizeof(a->key), a->pubkey);
+		fwrite(ct, ctlen, 1, a->fout);
+
+		arc4random_buf(a->salt, sizeof(a->salt));
+		fwrite(a->salt, sizeof(a->salt), 1, a->fout);
+	} else {
+		hdr_read(a, &hdr);
+
+		fread(ct, ctlen, 1, a->fin);
+		fread(a->salt, sizeof(a->salt), 1, a->fin);
+
+		load_pubkey(a);
+		load_seckey(a);
+
+		if (crypto_box_seal_open(a->key, ct, ctlen,
+		    a->pubkey, a->seckey) != 0)
+			errx(1, "crypto_box_seal_open error");
+
+		explicit_bzero(a->seckey, sizeof(a->seckey));
+	}
+
+	free(ct);
+
+	cipher(a);
+
+	explicit_bzero(a->key, sizeof(a->key));
+
+	/* Close files and zero memory. */
+	if (a->fin != stdin)
+		fclose(a->fin);
+	if (a->fout != stdout)
+		fclose(a->fout);
+
+	return 0;
+}
+
 int
 secret_key(struct ankh *a)
 {
@@ -774,7 +829,7 @@ secret_key(struct ankh *a)
 
 	/* Get the salt. */
 	if (a->enc)
-		randombytes_buf(a->salt, sizeof(a->salt));
+		arc4random_buf(a->salt, sizeof(a->salt));
 	else {
 		hdr_read(a, &hdr);
 		if (fread(&a->opslimit, sizeof(a->opslimit), 1, a->fin) != 1)
@@ -832,13 +887,13 @@ secret_key(struct ankh *a)
 	/* Perform the crypto operation. */
 	cipher(a);
 
+	explicit_bzero(a->key, sizeof(a->key));
+
 	/* Close files and zero memory. */
 	if (a->fin != stdin)
 		fclose(a->fin);
 	if (a->fout != stdout)
 		fclose(a->fout);
-
-	explicit_bzero(a, sizeof(struct ankh));
 
 	return 0;
 }

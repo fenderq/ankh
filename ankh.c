@@ -748,8 +748,8 @@ save_seckey(struct ankh *a)
 int
 sealed_box(struct ankh *a)
 {
-	struct ankh_header hdr;
 	size_t ctlen;
+	struct ankh_header hdr;
 	unsigned char *ct;
 
 	memset(&hdr, 0, sizeof(hdr));
@@ -766,6 +766,7 @@ sealed_box(struct ankh *a)
 
 		load_pubkey(a);
 
+		/* Random cipher key encrypted with public key. */
 		arc4random_buf(a->key, sizeof(a->key));
 		crypto_box_seal(ct, a->key, sizeof(a->key), a->pubkey);
 		fwrite(ct, ctlen, 1, a->fout);
@@ -781,6 +782,7 @@ sealed_box(struct ankh *a)
 		load_pubkey(a);
 		load_seckey(a);
 
+		/* Random cipher key decrypted with secret key. */
 		if (crypto_box_seal_open(a->key, ct, ctlen,
 		    a->pubkey, a->seckey) != 0)
 			errx(1, "crypto_box_seal_open error");
@@ -789,6 +791,9 @@ sealed_box(struct ankh *a)
 	}
 
 	free(ct);
+
+	if (pledge("stdio", NULL) == -1)
+		err(1, "pledge");
 
 	cipher(a);
 

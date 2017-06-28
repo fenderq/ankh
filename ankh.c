@@ -125,15 +125,14 @@ main(int argc, char *argv[])
 	int mode;
 	struct ankh a;
 
+	if (pledge("cpath rpath stdio tty wpath", NULL) == -1)
+		err(1, "pledge");
+
 	mode = DEFAULT_MODE;
 
 	memset(&a, 0, sizeof(a));
 	a.cmd = CMD_UNDEFINED;
 	a.enc = 1;
-#if 0
-	if (pledge("cpath rpath stdio tty wpath", NULL) == -1)
-		err(1, "pledge");
-#endif
 
 	if (sodium_init() == -1)
 		errx(1, "libsodium init error");
@@ -430,7 +429,7 @@ load_seckey(struct ankh *a)
 		errx(1, "libsodium crypto_pwhash: out of memory");
 
 	/* Clear passphrase from memory. */
-	sodium_memzero(a->passwd, sizeof(a->passwd));
+	explicit_bzero(a->passwd, sizeof(a->passwd));
 
 	/* Decrypt the secret key. */
 	if (crypto_secretbox_open_easy(a->seckey, ct, ctlen, a->nonce,
@@ -438,7 +437,7 @@ load_seckey(struct ankh *a)
 		errx(1, "invalid secret key");
 
 	/* Clear key from memory. */
-	sodium_memzero(a->key, sizeof(a->key));
+	explicit_bzero(a->key, sizeof(a->key));
 
 	free(ct);
 
@@ -462,7 +461,7 @@ save_seckey(struct ankh *a)
 
 	/* Allocate ciphertext. */
 	ctlen = sizeof(a->seckey) + crypto_secretbox_MACBYTES;
-	if ((ct = sodium_malloc(ctlen)) == NULL)
+	if ((ct = malloc(ctlen)) == NULL)
 		err(1, NULL);
 
 	/* Random nonce and salt. */
@@ -481,12 +480,12 @@ save_seckey(struct ankh *a)
 		errx(1, "libsodium crypto_pwhash: out of memory");
 
 	/* Clear passphrase from memory. */
-	sodium_memzero(a->passwd, sizeof(a->passwd));
+	explicit_bzero(a->passwd, sizeof(a->passwd));
 
 	/* Encrypt secret key. */
 	crypto_secretbox_easy(ct, a->seckey, sizeof(a->seckey),
 	    a->nonce, a->key);
-	sodium_memzero(a->key, sizeof(a->key));
+	explicit_bzero(a->key, sizeof(a->key));
 
 	/* Write our secret key file. */
 	time(&t);
@@ -520,7 +519,7 @@ save_seckey(struct ankh *a)
 	fprintf(fp, "key: %s\n", hex);
 	free(hex);
 
-	sodium_free(ct);
+	free(ct);
 	fclose(fp);
 
 	return 0;
@@ -551,7 +550,7 @@ generate_key_pair(struct ankh *a)
 		print_value("sec", a->seckey, sizeof(a->seckey));
 	}
 
-	sodium_memzero(a->seckey, sizeof(a->seckey));
+	explicit_bzero(a->seckey, sizeof(a->seckey));
 
 	return 0;
 }
@@ -585,7 +584,7 @@ secret_key(struct ankh *a)
 		    a->memlimit);
 	}
 
-	/* Read in passphrase. */
+	/* Read passphrase. */
 	if (a->keyfile[0] != '\0')
 		read_passwd_file(a->passwd, sizeof(a->passwd), a->keyfile);
 	else
@@ -596,8 +595,8 @@ secret_key(struct ankh *a)
 	    a->salt, a->opslimit, a->memlimit, crypto_pwhash_ALG_DEFAULT) != 0)
 		errx(1, "libsodium crypto_pwhash: out of memory");
 
-	/* Clear passphrase from memory. */
-	sodium_memzero(a->passwd, sizeof(a->passwd));
+	/* Zero passphrase in memory. */
+	explicit_bzero(a->passwd, sizeof(a->passwd));
 
 	if (verbose) {
 		print_value("salt", a->salt, sizeof(a->salt));
@@ -610,6 +609,10 @@ secret_key(struct ankh *a)
 	else if ((a->fout = fopen(a->outfile, "w")) == NULL)
 		err(1, "%s", a->outfile);
 
+	if (pledge("stdio", NULL) == -1)
+		err(1, "pledge");
+
+	/* Write header info. */
 	if (a->enc) {
 		hdr_write(a, &hdr);
 		if (fwrite(&a->opslimit, sizeof(a->opslimit), 1, a->fout) != 1)
@@ -620,19 +623,16 @@ secret_key(struct ankh *a)
 			errx(1, "error writing salt");
 	}
 
-	if (pledge("stdio", NULL) == -1)
-		err(1, "pledge");
-
 	/* Perform the crypto operation. */
 	cipher(a);
 
-	/* Close files, zero and free memory. */
+	/* Close files and zero memory. */
 	if (a->fin != stdin)
 		fclose(a->fin);
 	if (a->fout != stdout)
 		fclose(a->fout);
 
-	sodium_memzero(a, sizeof(struct ankh));
+	explicit_bzero(a, sizeof(struct ankh));
 
 	return 0;
 }
@@ -657,7 +657,7 @@ cipher(struct ankh *a)
 	 */
 	rlen = a->enc ? bufsize - crypto_secretbox_MACBYTES : bufsize;
 
-	sodium_memzero(n, sizeof(n));
+	explicit_bzero(n, sizeof(n));
 	while ((bytes = fread(buf, 1, rlen, a->fin)) != 0) {
 		sodium_increment(n, sizeof(n));
 		/*
@@ -680,7 +680,7 @@ cipher(struct ankh *a)
 	if (ferror(a->fin))
 		errx(1, "error reading from input stream");
 
-	sodium_memzero(buf, bufsize);
+	explicit_bzero(buf, bufsize);
 	free(buf);
 
 	return 0;
@@ -693,7 +693,7 @@ print_value(char *name, unsigned char *bin, int size)
 
 	sodium_bin2hex(hex, sizeof(hex), bin, size);
 	printf("%s = %s\n", name, hex);
-	sodium_memzero(hex, sizeof(hex));
+	explicit_bzero(hex, sizeof(hex));
 }
 
 /*
@@ -737,14 +737,14 @@ read_passwd_file(char *pass, size_t size, char *fname)
 	if ((fp = fopen(fname, "r")) == NULL)
 		err(1, "%s", fname);
 	linesize = MAX_LINE;
-	if ((line = sodium_malloc(linesize)) == NULL)
+	if ((line = malloc(linesize)) == NULL)
 		err(1, NULL);
 	linecount = 0;
 	memset(pass, 0, size);
 	while ((linelen = getline(&line, &linesize, fp)) != -1) {
 		line[strcspn(line, "\n")] = '\0';
 		strlcpy(pass, line, size);
-		sodium_memzero(line, linesize);
+		explicit_bzero(line, linesize);
 		linecount++;
 	}
 	if (linecount > 1)
@@ -754,7 +754,7 @@ read_passwd_file(char *pass, size_t size, char *fname)
 		errx(1, "please provide a password");
 	if (passlen < PASSWD_MIN)
 		errx(1, "password too small");
-	sodium_free(line);
+	free(line);
 	if (ferror(fp))
 		err(1, "%s", fname);
 	fclose(fp);
@@ -784,7 +784,7 @@ read_passwd_tty(char *pass, size_t size, int confirm)
 			errx(1, "unable to read passphrase");
 		if (strcmp(pass, pass2) != 0)
 			errx(1, "passwords don't match");
-		sodium_memzero(pass2, sizeof(pass2));
+		explicit_bzero(pass2, sizeof(pass2));
 	}
 
 	return 0;

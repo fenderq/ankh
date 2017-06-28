@@ -27,11 +27,14 @@
 
 #define BUFSIZE 1024 * 1024
 #define DEFAULT_MODE 2
+#define MAGIC_LEN 16
 #define MAX_LINE 4096
 #define PASSWD_MAX 128
-#define PASSWD_MIN 16
+#define PASSWD_MIN 8
 #define STRING_MAX 256
-#define VERSION "2.0.0"
+#define MAJ 2
+#define MIN 0
+#define REV 1
 
 enum command {
 	CMD_UNDEFINED,
@@ -52,11 +55,11 @@ struct nvp {
 };
 
 struct ankh_header {
-	unsigned char id[16];
-	short maj;
-	short min;
-	int type;
-	time_t ctime;
+	unsigned char id[MAGIC_LEN];
+	int maj;
+	int min;
+	int rev;
+	enum command cmd;
 };
 
 struct ankh {
@@ -68,6 +71,7 @@ struct ankh {
 	char passwd[PASSWD_MAX];
 	char pubfile[PATH_MAX];
 	char secfile[PATH_MAX];
+	enum command cmd;
 	int enc;
 	size_t memlimit;
 	unsigned char key[crypto_secretbox_KEYBYTES];
@@ -83,9 +87,17 @@ extern char *optarg;
 
 int verbose;
 
+unsigned char magic[] = {
+	0x9f, 0x29, 0x50, 0x63, 0xc0, 0x86, 0xa4, 0x0f,
+	0x9c, 0x88, 0x22, 0x92, 0xdc, 0x99, 0x8b, 0xe4
+};
+
 __dead void usage(void);
 
-int		 do_command(struct ankh *, enum command);
+int		 do_command(struct ankh *);
+
+int		 hdr_read(struct ankh *, struct ankh_header *);
+int		 hdr_write(struct ankh *, struct ankh_header *);
 
 static int	 cipher(struct ankh *);
 static int	 generate_key_pair(struct ankh *);
@@ -110,14 +122,13 @@ main(int argc, char *argv[])
 {
 	char ch;
 	const char *ep;
-	enum command cmd;
 	int mode;
 	struct ankh a;
 
-	cmd = CMD_UNDEFINED;
 	mode = DEFAULT_MODE;
 
 	memset(&a, 0, sizeof(a));
+	a.cmd = CMD_UNDEFINED;
 	a.enc = 1;
 #if 0
 	if (pledge("cpath rpath stdio tty wpath", NULL) == -1)
@@ -130,39 +141,39 @@ main(int argc, char *argv[])
 	while ((ch = getopt(argc, argv, "BGHKPSVdi:k:m:o:p:s:v")) != -1) {
 		switch (ch) {
 		case 'B':
-			if (cmd != CMD_UNDEFINED)
+			if (a.cmd != CMD_UNDEFINED)
 				usage();
-			cmd = CMD_SEALED_BOX;
+			a.cmd = CMD_SEALED_BOX;
 			break;
 		case 'G':
-			if (cmd != CMD_UNDEFINED)
+			if (a.cmd != CMD_UNDEFINED)
 				usage();
-			cmd = CMD_GENERATE_KEY_PAIR;
+			a.cmd = CMD_GENERATE_KEY_PAIR;
 			break;
 		case 'H':
-			if (cmd != CMD_UNDEFINED)
+			if (a.cmd != CMD_UNDEFINED)
 				usage();
-			cmd = CMD_HASH;
+			a.cmd = CMD_HASH;
 			break;
 		case 'K':
-			if (cmd != CMD_UNDEFINED)
+			if (a.cmd != CMD_UNDEFINED)
 				usage();
-			cmd = CMD_SECRET_KEY;
+			a.cmd = CMD_SECRET_KEY;
 			break;
 		case 'P':
-			if (cmd != CMD_UNDEFINED)
+			if (a.cmd != CMD_UNDEFINED)
 				usage();
-			cmd = CMD_PUBLIC_KEY;
+			a.cmd = CMD_PUBLIC_KEY;
 			break;
 		case 'S':
-			if (cmd != CMD_UNDEFINED)
+			if (a.cmd != CMD_UNDEFINED)
 				usage();
-			cmd = CMD_SIGNATURE;
+			a.cmd = CMD_SIGNATURE;
 			break;
 		case 'V':
-			if (cmd != CMD_UNDEFINED)
+			if (a.cmd != CMD_UNDEFINED)
 				usage();
-			cmd = CMD_VERSION;
+			a.cmd = CMD_VERSION;
 			break;
 		case 'd':
 			a.enc = 0;
@@ -199,15 +210,15 @@ main(int argc, char *argv[])
 	argv += optind;
 
 	set_mode(&a, mode);
-	do_command(&a, cmd);
+	do_command(&a);
 
 	exit(EXIT_SUCCESS);
 }
 
 int
-do_command(struct ankh *a, enum command cmd)
+do_command(struct ankh *a)
 {
-	switch (cmd) {
+	switch (a->cmd) {
 	case CMD_UNDEFINED:
 		usage();
 		break;
@@ -226,8 +237,8 @@ do_command(struct ankh *a, enum command cmd)
 	case CMD_SIGNATURE:
 		break;
 	case CMD_VERSION:
-		printf("%s %s (libsodium %s)\n", __progname, VERSION,
-		    sodium_version_string());
+		printf("%s %d.%d.%d (libsodium %s)\n", __progname,
+		    MAJ, MIN, REV, sodium_version_string());
 		break;
 	}
 
@@ -408,7 +419,7 @@ load_seckey(struct ankh *a)
 	nvp_free(&lines);
 
 	/* Read in passphrase. */
-	if (a->keyfile)
+	if (a->keyfile[0] != '\0')
 		read_passwd_file(a->passwd, sizeof(a->passwd), a->keyfile);
 	else
 		read_passwd_tty(a->passwd, sizeof(a->passwd), 1);
@@ -459,7 +470,7 @@ save_seckey(struct ankh *a)
 	randombytes_buf(a->salt, sizeof(a->salt));
 
 	/* Read in passphrase. */
-	if (a->keyfile)
+	if (a->keyfile[0] != '\0')
 		read_passwd_file(a->passwd, sizeof(a->passwd), a->keyfile);
 	else
 		read_passwd_tty(a->passwd, sizeof(a->passwd), 1);
@@ -520,19 +531,25 @@ generate_key_pair(struct ankh *a)
 {
 	crypto_box_keypair(a->pubkey, a->seckey);
 
-	printf("saving files ...\n");
+	if (verbose)
+		printf("saving files ...\n");
+
 	save_seckey(a);
 	save_pubkey(a);
 
-	print_value("pub", a->pubkey, sizeof(a->pubkey));
-	print_value("sec", a->seckey, sizeof(a->seckey));
+	if (verbose) {
+		print_value("pub", a->pubkey, sizeof(a->pubkey));
+		print_value("sec", a->seckey, sizeof(a->seckey));
+		printf("loading files ...\n");
+	}
 
 	load_seckey(a);
 	load_pubkey(a);
 
-	printf("loading files ...\n");
-	print_value("pub", a->pubkey, sizeof(a->pubkey));
-	print_value("sec", a->seckey, sizeof(a->seckey));
+	if (verbose) {
+		print_value("pub", a->pubkey, sizeof(a->pubkey));
+		print_value("sec", a->seckey, sizeof(a->seckey));
+	}
 
 	sodium_memzero(a->seckey, sizeof(a->seckey));
 
@@ -542,6 +559,8 @@ generate_key_pair(struct ankh *a)
 static int
 secret_key(struct ankh *a)
 {
+	struct ankh_header hdr;
+
 	/* Open input. */
 	if (a->infile[0] == '\0')
 		a->fin = stdin;
@@ -552,8 +571,13 @@ secret_key(struct ankh *a)
 	if (a->enc)
 		randombytes_buf(a->salt, sizeof(a->salt));
 	else {
+		hdr_read(a, &hdr);
+		if (fread(&a->opslimit, sizeof(a->opslimit), 1, a->fin) != 1)
+			errx(1, "error reading opslimit");
+		if (fread(&a->memlimit, sizeof(a->memlimit), 1, a->fin) != 1)
+			errx(1, "error reading memlimit");
 		if (fread(a->salt, sizeof(a->salt), 1, a->fin) != 1)
-			errx(1, "error reading salt from %s", a->infile);
+			errx(1, "error reading salt");
 	}
 
 	if (verbose) {
@@ -562,7 +586,7 @@ secret_key(struct ankh *a)
 	}
 
 	/* Read in passphrase. */
-	if (a->keyfile)
+	if (a->keyfile[0] != '\0')
 		read_passwd_file(a->passwd, sizeof(a->passwd), a->keyfile);
 	else
 		read_passwd_tty(a->passwd, sizeof(a->passwd), a->enc ? 1 : 0);
@@ -587,9 +611,13 @@ secret_key(struct ankh *a)
 		err(1, "%s", a->outfile);
 
 	if (a->enc) {
-		/* Write salt to output file. */
+		hdr_write(a, &hdr);
+		if (fwrite(&a->opslimit, sizeof(a->opslimit), 1, a->fout) != 1)
+			errx(1, "error writing opslimit");
+		if (fwrite(&a->memlimit, sizeof(a->memlimit), 1, a->fout) != 1)
+			errx(1, "error writing memlimit");
 		if (fwrite(a->salt, sizeof(a->salt), 1, a->fout) != 1)
-			errx(1, "error writing salt to %s", a->infile);
+			errx(1, "error writing salt");
 	}
 
 	if (pledge("stdio", NULL) == -1)
@@ -822,4 +850,39 @@ nvp_find(const char *name, struct nvplist *head, struct nvp **item)
 	}
 
 	return 1;
+}
+
+int
+hdr_read(struct ankh *a, struct ankh_header *h)
+{
+	/* Read the header. */
+	if (fread(h, sizeof(struct ankh_header), 1, a->fin) != 1)
+		errx(1, "failure to read header");
+
+	/* Verify this is an ankh file. */
+	if (memcmp(h->id, magic, sizeof(h->id)) != 0)
+		errx(1, "invalid %s file", __progname);
+
+	/* Verify file type matches command. */
+	if (h->cmd != a->cmd)
+		errx(1, "invalid file type %d for command %d", h->cmd, a->cmd);
+
+	return 0;
+}
+
+int
+hdr_write(struct ankh *a, struct ankh_header *h)
+{
+	memset(h, 0, sizeof(struct ankh_header));
+
+	memcpy(h->id, magic, sizeof(h->id));
+	h->maj = MAJ;
+	h->min = MIN;
+	h->rev = REV;
+	h->cmd = a->cmd;
+
+	if (fwrite(h, sizeof(struct ankh_header), 1, a->fout) != 1)
+		errx(1, "failure to write header");
+
+	return 0;
 }

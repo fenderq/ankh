@@ -59,9 +59,7 @@ struct ankh_header {
 struct ankh {
 	FILE *fin;
 	FILE *fout;
-	char infile[PATH_MAX];
 	char keyfile[PATH_MAX];
-	char outfile[PATH_MAX];
 	char passwd[PASSWD_MAX];
 	char pubfile[PATH_MAX];
 	char secfile[PATH_MAX];
@@ -135,7 +133,7 @@ main(int argc, char *argv[])
 	if (sodium_init() == -1)
 		errx(1, "libsodium init error");
 
-	while ((ch = getopt(argc, argv, "BGHKPSVdi:k:m:o:p:s:v")) != -1) {
+	while ((ch = getopt(argc, argv, "BGHKPSVdk:m:p:s:v")) != -1) {
 		switch (ch) {
 		case 'B':
 			if (a.cmd != CMD_UNDEFINED)
@@ -175,9 +173,6 @@ main(int argc, char *argv[])
 		case 'd':
 			a.enc = 0;
 			break;
-		case 'i':
-			strlcpy(a.infile, optarg, sizeof(a.infile));
-			break;
 		case 'k':
 			strlcpy(a.keyfile, optarg, sizeof(a.keyfile));
 			break;
@@ -188,9 +183,6 @@ main(int argc, char *argv[])
 			break;
 		case 'p':
 			strlcpy(a.pubfile, optarg, sizeof(a.pubfile));
-			break;
-		case 'o':
-			strlcpy(a.outfile, optarg, sizeof(a.outfile));
 			break;
 		case 's':
 			strlcpy(a.secfile, optarg, sizeof(a.secfile));
@@ -225,9 +217,9 @@ usage(void)
 		ankh V (version)
 	 */
 	fprintf(stderr, "usage:"
-	    "\t%1$s -K [-dikmo]\n"
+	    "\t%1$s -K [-dkm]\n"
 	    "\t%1$s -G [-km] -s seckey -p pubkey\n"
-	    "\t%1$s -B [-diko] -s seckey -p pubkey\n"
+	    "\t%1$s -B [-dk] -s seckey -p pubkey\n"
 	    "\t%1$s -V\n",
 	    getprogname());
 
@@ -479,7 +471,7 @@ load_seckey(struct ankh *a)
 	    strlen(np->value), NULL, NULL, NULL) != 0)
 		errx(1, "invalid data: %s", np->value);
 
-	name = "key";
+	name = "encrypted key";
 	if (nvp_find(name, &lines, &np) != 0)
 		errx(1, "missing %s in %s", name, a->secfile);
 	ctlen = strlen(np->value) / 2;
@@ -741,7 +733,7 @@ save_seckey(struct ankh *a)
 	if ((hex = malloc(hexsize)) == NULL)
 		err(1, NULL);
 	sodium_bin2hex(hex, hexsize, ct, ctlen);
-	fprintf(fp, "key: %s\n", hex);
+	fprintf(fp, "encrypted key: %s\n", hex);
 	free(hex);
 
 	free(ct);
@@ -762,17 +754,8 @@ sealed_box(struct ankh *a)
 
 	memset(&hdr, 0, sizeof(hdr));
 
-	/* Open input. */
-	if (a->infile[0] == '\0')
-		a->fin = stdin;
-	else if ((a->fin = fopen(a->infile, "r")) == NULL)
-			err(1, "%s", a->infile);
-
-	/* Open output. */
-	if (a->outfile[0] == '\0')
-		a->fout = stdout;
-	else if ((a->fout = fopen(a->outfile, "w")) == NULL)
-		err(1, "%s", a->outfile);
+	a->fin = stdin;
+	a->fout = stdout;
 
 	ctlen = sizeof(a->key) + crypto_box_SEALBYTES;
 	if ((ct = malloc(ctlen)) == NULL)
@@ -811,12 +794,6 @@ sealed_box(struct ankh *a)
 
 	explicit_bzero(a->key, sizeof(a->key));
 
-	/* Close files and zero memory. */
-	if (a->fin != stdin)
-		fclose(a->fin);
-	if (a->fout != stdout)
-		fclose(a->fout);
-
 	return 0;
 }
 
@@ -825,11 +802,8 @@ secret_key(struct ankh *a)
 {
 	struct ankh_header hdr;
 
-	/* Open input. */
-	if (a->infile[0] == '\0')
-		a->fin = stdin;
-	else if ((a->fin = fopen(a->infile, "r")) == NULL)
-			err(1, "%s", a->infile);
+	a->fin = stdin;
+	a->fout = stdout;
 
 	/* Get the salt. */
 	if (a->enc)
@@ -842,11 +816,6 @@ secret_key(struct ankh *a)
 			errx(1, "error reading memlimit");
 		if (fread(a->salt, sizeof(a->salt), 1, a->fin) != 1)
 			errx(1, "error reading salt");
-	}
-
-	if (verbose) {
-		printf("opslimit = %lld, memlimit = %ld\n", a->opslimit,
-		    a->memlimit);
 	}
 
 	/* Read passphrase. */
@@ -862,17 +831,6 @@ secret_key(struct ankh *a)
 
 	/* Zero passphrase in memory. */
 	explicit_bzero(a->passwd, sizeof(a->passwd));
-
-	if (verbose) {
-		print_value("salt", a->salt, sizeof(a->salt));
-		print_value("key", a->key, sizeof(a->key));
-	}
-
-	/* Open output. */
-	if (a->outfile[0] == '\0')
-		a->fout = stdout;
-	else if ((a->fout = fopen(a->outfile, "w")) == NULL)
-		err(1, "%s", a->outfile);
 
 	if (pledge("stdio", NULL) == -1)
 		err(1, "pledge");
@@ -892,12 +850,6 @@ secret_key(struct ankh *a)
 	cipher(a);
 
 	explicit_bzero(a->key, sizeof(a->key));
-
-	/* Close files and zero memory. */
-	if (a->fin != stdin)
-		fclose(a->fin);
-	if (a->fout != stdout)
-		fclose(a->fout);
 
 	return 0;
 }

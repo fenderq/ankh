@@ -20,12 +20,13 @@ testsize=	bs=$$(($$RANDOM % 1024 + 1)) count=$$(($$RANDOM % 8192 + 1024))
 test: ${PROG}
 	dd if=/dev/random of=foo.bin ${testsize}
 	sha256 foo.bin | tee SHA256
-	tr -cd [:graph:] < /dev/random | fold -bw 20 | head -1 | tee ${secret}
-	${PROG} -K -v -i foo.bin -o bar.bin -m ${mode} -k ${secret}
-	${PROG} -K -v -d -i bar.bin -o foo.bin -m ${mode} -k ${secret}
+	tr -cd [:graph:] < /dev/random | fold -bw 40 | head -1 | tee ${secret}
+	${PROG} -K -m ${mode} -k ${secret} < foo.bin > bar.bin
+	${PROG} -K -d -m ${mode} -k ${secret} < bar.bin > foo.bin
 	sha256 -c SHA256
-	${PROG} -G -v -p public.key -s secret.key -m ${mode} -k ${secret}
-	${PROG} -B -v -i foo.bin -o bar.bin -p public.key -k ${secret}
-	${PROG} -B -v -i bar.bin -o foo.bin -p public.key -s secret.key -k ${secret} -d
+	${PROG} -G -p ankh.pub -s ankh.sec -m ${mode} -k ${secret}
+	${PROG} -B -p ankh.pub -k ${secret} < foo.bin > bar.bin
+	${PROG} -B -p ankh.pub -k ${secret} -s ankh.sec -d < bar.bin > foo.bin
+	sha256 -c SHA256
 
 .include <bsd.prog.mk>

@@ -34,8 +34,8 @@
 #define STRING_MAX 256
 
 #define MAJ 2
-#define MIN 0
-#define REV 1
+#define MIN 1
+#define REV 0
 
 enum command {
 	CMD_UNDEFINED,
@@ -54,6 +54,9 @@ struct ankh_header {
 	int min;
 	int rev;
 	enum command cmd;
+	size_t memlimit;
+	unsigned long long opslimit;
+	unsigned char salt[crypto_pwhash_SALTBYTES];
 };
 
 struct ankh {
@@ -84,11 +87,11 @@ struct nvp {
 extern char *optarg;
 
 int verbose;
-struct ankh *clrptr;
+struct ankh *adp;
 
 unsigned char magic[] = {
-	0x9f, 0x29, 0x50, 0x63, 0xc0, 0x86, 0xa4, 0x0f,
-	0x9c, 0x88, 0x22, 0x92, 0xdc, 0x99, 0x8b, 0xe4
+	0x7e, 0x82, 0x72, 0x2d, 0xfc, 0xac, 0xf3, 0x05,
+	0x99, 0x7f, 0xee, 0x77, 0x34, 0x15, 0x7f, 0x5a
 };
 
 __dead void usage(void);
@@ -96,8 +99,8 @@ __dead void usage(void);
 int	 cipher(struct ankh *);
 int	 do_command(struct ankh *);
 int	 generate_key_pair(struct ankh *);
-int	 hdr_read(struct ankh *, struct ankh_header *);
-int	 hdr_write(struct ankh *, struct ankh_header *);
+int	 header_read(struct ankh *, struct ankh_header *);
+int	 header_write(struct ankh *, struct ankh_header *);
 int	 load_pubkey(struct ankh *);
 int	 load_seckey(struct ankh *);
 int	 nvp_add(char *, char *, struct nvplist *);
@@ -119,16 +122,17 @@ main(int argc, char *argv[])
 	char ch;
 	const char *ep;
 	int mode;
-	struct ankh a;
 
 	if (pledge("cpath rpath stdio tty wpath", NULL) == -1)
 		err(1, "pledge");
 
 	mode = DEFAULT_MODE;
 
-	memset(&a, 0, sizeof(a));
-	a.cmd = CMD_UNDEFINED;
-	a.enc = 1;
+	if ((adp = calloc(1, sizeof(struct ankh))) == NULL)
+		err(1, NULL);
+
+	adp->cmd = CMD_UNDEFINED;
+	adp->enc = 1;
 
 	if (sodium_init() == -1)
 		errx(1, "libsodium init error");
@@ -136,45 +140,45 @@ main(int argc, char *argv[])
 	while ((ch = getopt(argc, argv, "BGHKPSVdk:m:p:s:v")) != -1) {
 		switch (ch) {
 		case 'B':
-			if (a.cmd != CMD_UNDEFINED)
+			if (adp->cmd != CMD_UNDEFINED)
 				usage();
-			a.cmd = CMD_SEALED_BOX;
+			adp->cmd = CMD_SEALED_BOX;
 			break;
 		case 'G':
-			if (a.cmd != CMD_UNDEFINED)
+			if (adp->cmd != CMD_UNDEFINED)
 				usage();
-			a.cmd = CMD_GENERATE_KEY_PAIR;
+			adp->cmd = CMD_GENERATE_KEY_PAIR;
 			break;
 		case 'H':
-			if (a.cmd != CMD_UNDEFINED)
+			if (adp->cmd != CMD_UNDEFINED)
 				usage();
-			a.cmd = CMD_HASH;
+			adp->cmd = CMD_HASH;
 			break;
 		case 'K':
-			if (a.cmd != CMD_UNDEFINED)
+			if (adp->cmd != CMD_UNDEFINED)
 				usage();
-			a.cmd = CMD_SECRET_KEY;
+			adp->cmd = CMD_SECRET_KEY;
 			break;
 		case 'P':
-			if (a.cmd != CMD_UNDEFINED)
+			if (adp->cmd != CMD_UNDEFINED)
 				usage();
-			a.cmd = CMD_PUBLIC_KEY;
+			adp->cmd = CMD_PUBLIC_KEY;
 			break;
 		case 'S':
-			if (a.cmd != CMD_UNDEFINED)
+			if (adp->cmd != CMD_UNDEFINED)
 				usage();
-			a.cmd = CMD_SIGNATURE;
+			adp->cmd = CMD_SIGNATURE;
 			break;
 		case 'V':
-			if (a.cmd != CMD_UNDEFINED)
+			if (adp->cmd != CMD_UNDEFINED)
 				usage();
-			a.cmd = CMD_VERSION;
+			adp->cmd = CMD_VERSION;
 			break;
 		case 'd':
-			a.enc = 0;
+			adp->enc = 0;
 			break;
 		case 'k':
-			strlcpy(a.keyfile, optarg, sizeof(a.keyfile));
+			strlcpy(adp->keyfile, optarg, sizeof(adp->keyfile));
 			break;
 		case 'm':
 			mode = strtonum(optarg, 1, 3, &ep);
@@ -182,10 +186,10 @@ main(int argc, char *argv[])
 				errx(1, "mode %s", ep);
 			break;
 		case 'p':
-			strlcpy(a.pubfile, optarg, sizeof(a.pubfile));
+			strlcpy(adp->pubfile, optarg, sizeof(adp->pubfile));
 			break;
 		case 's':
-			strlcpy(a.secfile, optarg, sizeof(a.secfile));
+			strlcpy(adp->secfile, optarg, sizeof(adp->secfile));
 			break;
 		case 'v':
 			verbose = 1;
@@ -198,8 +202,11 @@ main(int argc, char *argv[])
 	argc -= optind;
 	argv += optind;
 
-	set_mode(&a, mode);
-	do_command(&a);
+	adp->fin = stdin;
+	adp->fout = stdout;
+	set_mode(adp, mode);
+	do_command(adp);
+	freezero(adp, sizeof(struct ankh));
 
 	exit(EXIT_SUCCESS);
 }
@@ -219,7 +226,7 @@ usage(void)
 	fprintf(stderr, "usage:"
 	    "\t%1$s -K [-dkm]\n"
 	    "\t%1$s -G [-km] -s seckey -p pubkey\n"
-	    "\t%1$s -B [-dk] -s seckey -p pubkey\n"
+	    "\t%1$s -B [-dk] [-s seckey] -p pubkey\n"
 	    "\t%1$s -V\n",
 	    getprogname());
 
@@ -319,33 +326,41 @@ generate_key_pair(struct ankh *a)
 }
 
 int
-hdr_read(struct ankh *a, struct ankh_header *h)
+header_read(struct ankh *a, struct ankh_header *h)
 {
-	/* Read the header. */
 	if (fread(h, sizeof(struct ankh_header), 1, a->fin) != 1)
 		errx(1, "failure to read header");
 
-	/* Verify this is an ankh file. */
 	if (memcmp(h->id, magic, sizeof(h->id)) != 0)
-		errx(1, "invalid %s file", getprogname());
+		errx(1, "invalid file");
 
-	/* Verify file type matches command. */
 	if (h->cmd != a->cmd)
 		errx(1, "invalid file type %d for command %d", h->cmd, a->cmd);
+
+	a->memlimit = h->memlimit;
+	a->opslimit = h->opslimit;
+	memcpy(a->salt, h->salt, sizeof(a->salt));
 
 	return 0;
 }
 
 int
-hdr_write(struct ankh *a, struct ankh_header *h)
+header_write(struct ankh *a, struct ankh_header *h)
 {
 	memset(h, 0, sizeof(struct ankh_header));
 
 	memcpy(h->id, magic, sizeof(h->id));
+
 	h->maj = MAJ;
 	h->min = MIN;
 	h->rev = REV;
 	h->cmd = a->cmd;
+
+	if (a->cmd == CMD_SECRET_KEY) {
+		h->memlimit = a->memlimit;
+		h->opslimit = a->opslimit;
+		memcpy(h->salt, a->salt, sizeof(h->salt));
+	}
 
 	if (fwrite(h, sizeof(struct ankh_header), 1, a->fout) != 1)
 		errx(1, "failure to write header");
@@ -742,52 +757,37 @@ save_seckey(struct ankh *a)
 	return 0;
 }
 
-/*
- * Sealed Box (anonymous) using public key cryptography.
- * X25519, XSalsa20, Poly1305.
- */
 int
 sealed_box(struct ankh *a)
 {
 	size_t ctlen;
-	struct ankh_header hdr;
+	struct ankh_header h;
 	unsigned char *ct;
 
-	memset(&hdr, 0, sizeof(hdr));
-
-	a->fin = stdin;
-	a->fout = stdout;
+	memset(&h, 0, sizeof(h));
 
 	ctlen = sizeof(a->key) + crypto_box_SEALBYTES;
 	if ((ct = malloc(ctlen)) == NULL)
 		err(1, NULL);
+	memset(ct, 0, ctlen);
 
 	if (a->enc) {
-		hdr_write(a, &hdr);
-
+		header_write(a, &h);
 		load_pubkey(a);
-
-		/* Random cipher key encrypted with public key. */
+		/* Generate random key. */
 		arc4random_buf(a->key, sizeof(a->key));
+		/* Encrypt random key with public key. */
 		crypto_box_seal(ct, a->key, sizeof(a->key), a->pubkey);
 		fwrite(ct, ctlen, 1, a->fout);
-
-		arc4random_buf(a->salt, sizeof(a->salt));
-		fwrite(a->salt, sizeof(a->salt), 1, a->fout);
 	} else {
-		hdr_read(a, &hdr);
-
+		header_read(a, &h);
 		fread(ct, ctlen, 1, a->fin);
-		fread(a->salt, sizeof(a->salt), 1, a->fin);
-
 		load_pubkey(a);
 		load_seckey(a);
-
-		/* Random cipher key decrypted with secret key. */
+		/* Decrypt random key with secret key. */
 		if (crypto_box_seal_open(a->key, ct, ctlen,
 		    a->pubkey, a->seckey) != 0)
 			errx(1, "crypto_box_seal_open error");
-
 		explicit_bzero(a->seckey, sizeof(a->seckey));
 	}
 
@@ -803,30 +803,16 @@ sealed_box(struct ankh *a)
 	return 0;
 }
 
-/*
- * Standard IO encrypt/decrypt using a passphrase.
- * Argon2i, XSalsa20, Poly1305.
- */
 int
 secret_key(struct ankh *a)
 {
-	struct ankh_header hdr;
-
-	a->fin = stdin;
-	a->fout = stdout;
+	struct ankh_header h;
 
 	/* Get the salt. */
 	if (a->enc)
 		arc4random_buf(a->salt, sizeof(a->salt));
-	else {
-		hdr_read(a, &hdr);
-		if (fread(&a->opslimit, sizeof(a->opslimit), 1, a->fin) != 1)
-			errx(1, "error reading opslimit");
-		if (fread(&a->memlimit, sizeof(a->memlimit), 1, a->fin) != 1)
-			errx(1, "error reading memlimit");
-		if (fread(a->salt, sizeof(a->salt), 1, a->fin) != 1)
-			errx(1, "error reading salt");
-	}
+	else
+		header_read(a, &h);
 
 	/* Read passphrase. */
 	if (a->keyfile[0] != '\0')
@@ -846,15 +832,8 @@ secret_key(struct ankh *a)
 		err(1, "pledge");
 
 	/* Write header info. */
-	if (a->enc) {
-		hdr_write(a, &hdr);
-		if (fwrite(&a->opslimit, sizeof(a->opslimit), 1, a->fout) != 1)
-			errx(1, "error writing opslimit");
-		if (fwrite(&a->memlimit, sizeof(a->memlimit), 1, a->fout) != 1)
-			errx(1, "error writing memlimit");
-		if (fwrite(a->salt, sizeof(a->salt), 1, a->fout) != 1)
-			errx(1, "error writing salt");
-	}
+	if (a->enc)
+		header_write(a, &h);
 
 	/* Perform the crypto operation. */
 	cipher(a);

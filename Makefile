@@ -11,7 +11,8 @@ CFLAGS+=	-I/usr/local/include
 LDADD=		-L/usr/local/lib -lsodium
 
 BINDIR=		/usr/local/bin
-MANDIR=		/usr/local/man/man
+#MANDIR=		/usr/local/man/man
+NOMAN=		noman
 
 infile=		foo.bin
 mode=		1

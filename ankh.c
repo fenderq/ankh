@@ -89,26 +89,27 @@ unsigned char magic[] = {
 
 __dead void usage(void);
 
-int	 cipher(struct ankh *);
-int	 do_command(struct ankh *);
-int	 generate_key_pair(struct ankh *);
-char	*getid(char *, size_t);
-int	 header_read(struct ankh *);
-int	 header_write(struct ankh *);
-int	 load_pubkey(struct ankh *);
-int	 load_seckey(struct ankh *);
-int	 nvp_add(char *, char *, struct nvplist *);
-int	 nvp_find(const char *, struct nvplist *, struct nvp **);
-void	 nvp_free(struct nvplist *);
-void	 print_value(char *, unsigned char *, int);
-int	 read_passwd_file(char *, size_t, char *);
-int	 read_passwd_tty(char *, size_t, int);
-int	 save_pubkey(struct ankh *);
-int	 save_seckey(struct ankh *);
-int	 sealed_box(struct ankh *);
-int	 secret_key(struct ankh *);
-void	 set_mode(struct ankh *, int);
-char	*str_time(char *, size_t, time_t);
+int	 	 cipher(struct ankh *);
+int	 	 do_command(struct ankh *);
+int	 	 generate_key_pair(struct ankh *);
+char		 *getid(char *, size_t);
+int	 	 header_read(struct ankh *);
+int	 	 header_write(struct ankh *);
+int	 	 load_pubkey(struct ankh *);
+int	 	 load_seckey(struct ankh *);
+int	 	 nvp_add(char *, char *, struct nvplist *);
+int	 	 nvp_find(const char *, struct nvplist *, struct nvp **);
+void	 	 nvp_free(struct nvplist *);
+void	 	 print_value(char *, unsigned char *, int);
+int	 	 read_passwd_file(char *, size_t, char *);
+int	 	 read_passwd_tty(char *, size_t, int);
+int	 	 save_pubkey(struct ankh *);
+int	 	 save_seckey(struct ankh *);
+int	 	 sealed_box(struct ankh *);
+int	 	 secret_key(struct ankh *);
+void	 	 set_mode(struct ankh *, int);
+char		*str_time(char *, size_t, time_t);
+const char	*version(void);
 
 int
 main(int argc, char *argv[])
@@ -299,8 +300,8 @@ do_command(struct ankh *a)
 	case CMD_SIGNATURE:
 		break;
 	case CMD_VERSION:
-		printf("%s %d.%d.%d (libsodium %s)\n", getprogname(),
-		    MAJ, MIN, REV, sodium_version_string());
+		printf("%s %s (libsodium %s)\n", getprogname(),
+		    version(), sodium_version_string());
 		break;
 	}
 
@@ -367,10 +368,6 @@ header_read(struct ankh *a)
 
 	a->cmd = cmd;
 
-	/* Salt. */
-	if (fread(a->salt, sizeof(a->salt), 1, a->fin) != 1)
-		errx(1, "failure to read header salt");
-
 	return 0;
 }
 
@@ -392,9 +389,6 @@ header_write(struct ankh *a)
 
 	if (fwrite(params, HEADER_PARAM_SIZE, 1, a->fout) != 1)
 		errx(1, "failure to write header params");
-
-	if (fwrite(a->salt, sizeof(a->salt), 1, a->fout) != 1)
-		errx(1, "failure to write header salt");
 
 	return 0;
 }
@@ -702,7 +696,8 @@ save_pubkey(struct ankh *a)
 	time(&t);
 	str_time(now, sizeof(now), t);
 	getid(id, sizeof(id));
-	fprintf(fp, "# %s public key\n# %s\n# %s\n", getprogname(), now, id);
+	fprintf(fp, "# %s v%s public key\n# %s\n# %s\n",
+	    getprogname(), version(), now, id);
 	fprintf(fp, "key: %s\n", hex);
 	fclose(fp);
 	free(hex);
@@ -761,7 +756,8 @@ save_seckey(struct ankh *a)
 	time(&t);
 	str_time(now, sizeof(now), t);
 	getid(id, sizeof(id));
-	fprintf(fp, "# %s secret key\n# %s\n# %s\n", getprogname(), now, id);
+	fprintf(fp, "# %s v%s secret key\n# %s\n# %s\n",
+	    getprogname(), version(), now, id);
 
 	fprintf(fp, "opslimit: %llu\n", a->opslimit);
 	fprintf(fp, "memlimit: %ld\n", a->memlimit);
@@ -850,8 +846,11 @@ secret_key(struct ankh *a)
 	/* Get the salt. */
 	if (a->enc)
 		arc4random_buf(a->salt, sizeof(a->salt));
-	else
+	else {
 		header_read(a);
+		if (fread(a->salt, sizeof(a->salt), 1, a->fin) != 1)
+			errx(1, "failure to read salt");
+	}
 
 	/* Read passphrase. */
 	if (a->keyfile[0] != '\0')
@@ -870,9 +869,12 @@ secret_key(struct ankh *a)
 	if (pledge("stdio", NULL) == -1)
 		err(1, "pledge");
 
-	/* Write header info. */
-	if (a->enc)
+	/* Write header info and salt. */
+	if (a->enc) {
 		header_write(a);
+		if (fwrite(a->salt, sizeof(a->salt), 1, a->fout) != 1)
+			errx(1, "failure to write salt");
+	}
 
 	/* Perform the crypto operation. */
 	cipher(a);
@@ -921,4 +923,15 @@ str_time(char *str, size_t size, time_t t)
 	strftime(str, size - 1, "%Y-%m-%dT%H:%M:%S%z", &tm);
 
 	return str;
+}
+
+const char *
+version(void)
+{
+	static char v[STRING_MAX];
+
+	if (v[0] == '\0')
+		snprintf(v, sizeof(v), "%d.%d.%d", MAJ, MIN, REV);
+
+	return v;
 }

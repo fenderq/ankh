@@ -92,7 +92,7 @@ __dead void usage(void);
 int	 	 cipher(struct ankh *);
 int	 	 do_command(struct ankh *);
 int	 	 generate_key_pair(struct ankh *);
-char		 *getid(char *, size_t);
+char		*getid(char *, size_t);
 int	 	 header_read(struct ankh *);
 int	 	 header_write(struct ankh *);
 int	 	 load_pubkey(struct ankh *);
@@ -100,9 +100,9 @@ int	 	 load_seckey(struct ankh *);
 int	 	 nvp_add(char *, char *, struct nvplist *);
 int	 	 nvp_find(const char *, struct nvplist *, struct nvp **);
 void	 	 nvp_free(struct nvplist *);
+int	 	 passwd_read_file(char *, size_t, char *);
+int	 	 passwd_read_tty(char *, size_t, int);
 void	 	 print_value(char *, unsigned char *, int);
-int	 	 read_passwd_file(char *, size_t, char *);
-int	 	 read_passwd_tty(char *, size_t, int);
 int	 	 save_pubkey(struct ankh *);
 int	 	 save_seckey(struct ankh *);
 int	 	 sealed_box(struct ankh *);
@@ -111,6 +111,10 @@ void	 	 set_mode(struct ankh *, int);
 char		*str_time(char *, size_t, time_t);
 const char	*version(void);
 
+/*
+ * ankh libsodium utility.
+ * Designed and tested on OpenBSD 6.1-current amd64.
+ */
 int
 main(int argc, char *argv[])
 {
@@ -314,8 +318,8 @@ generate_key_pair(struct ankh *a)
 	crypto_box_keypair(a->pubkey, a->seckey);
 
 	save_seckey(a);
-	save_pubkey(a);
 	explicit_bzero(a->seckey, sizeof(a->seckey));
+	save_pubkey(a);
 
 	return 0;
 }
@@ -526,9 +530,9 @@ load_seckey(struct ankh *a)
 
 	/* Read in passphrase. */
 	if (a->keyfile[0] != '\0')
-		read_passwd_file(a->passwd, sizeof(a->passwd), a->keyfile);
+		passwd_read_file(a->passwd, sizeof(a->passwd), a->keyfile);
 	else
-		read_passwd_tty(a->passwd, sizeof(a->passwd), 0);
+		passwd_read_tty(a->passwd, sizeof(a->passwd), 0);
 
 	/* Generate key from passphrase. */
 	if (crypto_pwhash(a->key, sizeof(a->key), a->passwd, strlen(a->passwd),
@@ -600,56 +604,56 @@ nvp_free(struct nvplist *head)
 	}
 }
 
-void
-print_value(char *name, unsigned char *bin, int size)
-{
-	char hex[MAX_LINE];
-
-	sodium_bin2hex(hex, sizeof(hex), bin, size);
-	printf("%s = %s\n", name, hex);
-	explicit_bzero(hex, sizeof(hex));
-}
-
 int
-read_passwd_file(char *pass, size_t size, char *fname)
+passwd_read_file(char *pass, size_t size, char *fname)
 {
 	FILE *fp;
 	char *line;
 	int linecount;
 	size_t linesize;
-	ssize_t linelen;
 	size_t passlen;
+	ssize_t linelen;
 
 	if ((fp = fopen(fname, "r")) == NULL)
 		err(1, "%s", fname);
+
 	linesize = MAX_LINE;
 	if ((line = malloc(linesize)) == NULL)
 		err(1, NULL);
+
 	linecount = 0;
 	memset(pass, 0, size);
+
 	while ((linelen = getline(&line, &linesize, fp)) != -1) {
 		line[strcspn(line, "\n")] = '\0';
 		strlcpy(pass, line, size);
 		explicit_bzero(line, linesize);
 		linecount++;
 	}
+
 	if (linecount > 1)
 		errx(1, "%s contains multiple lines (%d)", fname, linecount);
+
 	passlen = strlen(pass);
+
 	if (passlen == 0)
 		errx(1, "please provide a password");
+
 	if (passlen < PASSWD_MIN)
 		errx(1, "password too small");
+
 	free(line);
+
 	if (ferror(fp))
 		err(1, "%s", fname);
+
 	fclose(fp);
 
 	return 0;
 }
 
 int
-read_passwd_tty(char *pass, size_t size, int confirm)
+passwd_read_tty(char *pass, size_t size, int confirm)
 {
 	char pass2[PASSWD_MAX];
 	int flags;
@@ -659,9 +663,12 @@ read_passwd_tty(char *pass, size_t size, int confirm)
 
 	if (!readpassphrase("passphrase: ", pass, size, flags))
 		errx(1, "unable to read passphrase");
+
 	passlen = strlen(pass);
+
 	if (passlen == 0)
 		errx(1, "please provide a password");
+
 	if (confirm) {
 		if (passlen < PASSWD_MIN)
 			errx(1, "password too small");
@@ -676,6 +683,16 @@ read_passwd_tty(char *pass, size_t size, int confirm)
 	return 0;
 }
 
+void
+print_value(char *name, unsigned char *bin, int size)
+{
+	char hex[MAX_LINE];
+
+	sodium_bin2hex(hex, sizeof(hex), bin, size);
+	printf("%s = %s\n", name, hex);
+	explicit_bzero(hex, sizeof(hex));
+}
+
 int
 save_pubkey(struct ankh *a)
 {
@@ -687,18 +704,25 @@ save_pubkey(struct ankh *a)
 	time_t t;
 
 	memset(id, 0, sizeof(id));
+
 	hexsize = sizeof(a->pubkey) * 2 + 1;
 	if ((hex = malloc(hexsize)) == NULL)
 		err(1, NULL);
+
 	sodium_bin2hex(hex, hexsize, a->pubkey, sizeof(a->pubkey));
+
 	if ((fp = fopen(a->pubfile, "w")) == NULL)
 		err(1, "%s", a->pubfile);
+
 	time(&t);
 	str_time(now, sizeof(now), t);
 	getid(id, sizeof(id));
+
 	fprintf(fp, "# %s v%s public key\n# %s\n# %s\n",
 	    getprogname(), version(), now, id);
+
 	fprintf(fp, "key: %s\n", hex);
+
 	fclose(fp);
 	free(hex);
 
@@ -735,9 +759,9 @@ save_seckey(struct ankh *a)
 
 	/* Read in passphrase. */
 	if (a->keyfile[0] != '\0')
-		read_passwd_file(a->passwd, sizeof(a->passwd), a->keyfile);
+		passwd_read_file(a->passwd, sizeof(a->passwd), a->keyfile);
 	else
-		read_passwd_tty(a->passwd, sizeof(a->passwd), 1);
+		passwd_read_tty(a->passwd, sizeof(a->passwd), 1);
 
 	/* Generate key from passphrase. */
 	if (crypto_pwhash(a->key, sizeof(a->key), a->passwd, strlen(a->passwd),
@@ -815,10 +839,12 @@ sealed_box(struct ankh *a)
 		arc4random_buf(a->key, sizeof(a->key));
 		/* Encrypt random key with public key. */
 		crypto_box_seal(ct, a->key, sizeof(a->key), a->pubkey);
-		fwrite(ct, ctlen, 1, a->fout);
+		if (fwrite(ct, ctlen, 1, a->fout) != 1)
+			err(1, "failure to write sealed box");
 	} else {
 		header_read(a);
-		fread(ct, ctlen, 1, a->fin);
+		if (fread(ct, ctlen, 1, a->fin) != 1)
+			err(1, "failure to read sealed box");
 		load_pubkey(a);
 		load_seckey(a);
 		/* Decrypt random key with secret key. */
@@ -833,6 +859,7 @@ sealed_box(struct ankh *a)
 	if (pledge("stdio", NULL) == -1)
 		err(1, "pledge");
 
+	/* Perform the crypto operation. */
 	cipher(a);
 
 	explicit_bzero(a->key, sizeof(a->key));
@@ -854,9 +881,9 @@ secret_key(struct ankh *a)
 
 	/* Read passphrase. */
 	if (a->keyfile[0] != '\0')
-		read_passwd_file(a->passwd, sizeof(a->passwd), a->keyfile);
+		passwd_read_file(a->passwd, sizeof(a->passwd), a->keyfile);
 	else
-		read_passwd_tty(a->passwd, sizeof(a->passwd), a->enc ? 1 : 0);
+		passwd_read_tty(a->passwd, sizeof(a->passwd), a->enc ? 1 : 0);
 
 	/* Generate key from passphrase. */
 	if (crypto_pwhash(a->key, sizeof(a->key), a->passwd, strlen(a->passwd),

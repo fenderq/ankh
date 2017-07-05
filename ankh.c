@@ -702,8 +702,7 @@ save_pubkey(struct ankh *a)
 	time(&t);
 	str_time(now, sizeof(now), t);
 	getid(id, sizeof(id));
-	fprintf(fp, "# %s public key\n# %s\n# %s\n",
-	    getprogname(), now, id);
+	fprintf(fp, "# %s public key\n# %s\n# %s\n", getprogname(), now, id);
 	fprintf(fp, "key: %s\n", hex);
 	fclose(fp);
 	free(hex);
@@ -762,8 +761,7 @@ save_seckey(struct ankh *a)
 	time(&t);
 	str_time(now, sizeof(now), t);
 	getid(id, sizeof(id));
-	fprintf(fp, "# %s secret key\n# %s\n# %s\n",
-	    getprogname(), now, id);
+	fprintf(fp, "# %s secret key\n# %s\n# %s\n", getprogname(), now, id);
 
 	fprintf(fp, "opslimit: %llu\n", a->opslimit);
 	fprintf(fp, "memlimit: %ld\n", a->memlimit);

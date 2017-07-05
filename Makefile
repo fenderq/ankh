@@ -29,14 +29,14 @@ test: ${PROG}
 	# generate random passphrase
 	tr -cd [:graph:] < /dev/random | fold -bw 40 | head -1 | tee ${secret}
 	# test secret key
-	${PROG} -K -m ${mode} -k ${secret} < ${infile} > ${outfile}
-	${PROG} -K -d -m ${mode} -k ${secret} < ${outfile} > ${infile}
+	./${PROG} -K -m ${mode} -k ${secret} < ${infile} > ${outfile}
+	./${PROG} -K -d -m ${mode} -k ${secret} < ${outfile} > ${infile}
 	sha256 -c SHA256
 	# generate key pair
-	${PROG} -G -p ${pubkey} -s ${seckey} -m ${mode} -k ${secret}
+	./${PROG} -G -p ${pubkey} -s ${seckey} -m ${mode} -k ${secret}
 	# test sealed box
-	${PROG} -B -p ${pubkey} -k ${secret} < ${infile} > ${outfile}
-	${PROG} -B -p ${pubkey} -k ${secret} -s ${seckey} -d \
+	./${PROG} -B -p ${pubkey} -k ${secret} < ${infile} > ${outfile}
+	./${PROG} -B -p ${pubkey} -k ${secret} -s ${seckey} -d \
 	    < ${outfile} > ${infile}
 	sha256 -c SHA256
 

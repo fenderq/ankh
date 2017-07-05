@@ -27,6 +27,7 @@
 
 #define BUFSIZE 1024 * 1024
 #define DEFAULT_MODE 2
+#define HEADER_PARAM_SIZE 64
 #define MAGIC_LEN 16
 #define MAX_LINE 4096
 #define PASSWD_MAX 128
@@ -46,17 +47,6 @@ enum command {
 	CMD_SECRET_KEY,
 	CMD_SIGNATURE,
 	CMD_VERSION
-};
-
-struct ankh_header {
-	unsigned char id[MAGIC_LEN];
-	int maj;
-	int min;
-	int rev;
-	enum command cmd;
-	size_t memlimit;
-	unsigned long long opslimit;
-	unsigned char salt[crypto_pwhash_SALTBYTES];
 };
 
 struct ankh {
@@ -99,8 +89,8 @@ __dead void usage(void);
 int	 cipher(struct ankh *);
 int	 do_command(struct ankh *);
 int	 generate_key_pair(struct ankh *);
-int	 header_read(struct ankh *, struct ankh_header *);
-int	 header_write(struct ankh *, struct ankh_header *);
+int	 header_read(struct ankh *);
+int	 header_write(struct ankh *);
 int	 load_pubkey(struct ankh *);
 int	 load_seckey(struct ankh *);
 int	 nvp_add(char *, char *, struct nvplist *);
@@ -326,44 +316,62 @@ generate_key_pair(struct ankh *a)
 }
 
 int
-header_read(struct ankh *a, struct ankh_header *h)
+header_read(struct ankh *a)
 {
-	if (fread(h, sizeof(struct ankh_header), 1, a->fin) != 1)
-		errx(1, "failure to read header");
+	int cmd;
+	int v[3];
+	unsigned char params[HEADER_PARAM_SIZE + 1];
+	unsigned m[MAGIC_LEN];
 
-	if (memcmp(h->id, magic, sizeof(h->id)) != 0)
+	memset(params, 0, sizeof(params));
+
+	/* Magic. */
+	if (fread(m, MAGIC_LEN, 1, a->fin) != 1)
+		errx(1, "failure to read header magic");
+
+	if (memcmp(m, magic, MAGIC_LEN) != 0)
 		errx(1, "invalid file");
 
-	if (h->cmd != a->cmd)
-		errx(1, "invalid file type %d for command %d", h->cmd, a->cmd);
+	/* Parameters. */
+	if (fread(params, HEADER_PARAM_SIZE, 1, a->fin) != 1)
+		errx(1, "failure to read header params");
 
-	a->memlimit = h->memlimit;
-	a->opslimit = h->opslimit;
-	memcpy(a->salt, h->salt, sizeof(a->salt));
+	sscanf(params, "%d %d %d %d %ld %llu",
+	    &v[0], &v[1], &v[2], &cmd, &a->memlimit, &a->opslimit);
+
+	if (v[0] != MAJ || v[1] != MIN || v[2] != REV)
+		errx(1, "invalid file v%d.%d.%d\n", v[0], v[1], v[2]);
+
+	a->cmd = cmd;
+
+	/* Salt. */
+	if (fread(a->salt, sizeof(a->salt), 1, a->fin) != 1)
+		errx(1, "failure to read header salt");
 
 	return 0;
 }
 
 int
-header_write(struct ankh *a, struct ankh_header *h)
+header_write(struct ankh *a)
 {
-	memset(h, 0, sizeof(struct ankh_header));
+	size_t len;
+	unsigned char params[HEADER_PARAM_SIZE + 1];
 
-	memcpy(h->id, magic, sizeof(h->id));
+	memset(params, 0, sizeof(params));
 
-	h->maj = MAJ;
-	h->min = MIN;
-	h->rev = REV;
-	h->cmd = a->cmd;
+	if (fwrite(magic, MAGIC_LEN, 1, a->fout) != 1)
+		errx(1, "failure to write header magic");
 
-	if (a->cmd == CMD_SECRET_KEY) {
-		h->memlimit = a->memlimit;
-		h->opslimit = a->opslimit;
-		memcpy(h->salt, a->salt, sizeof(h->salt));
-	}
+	len = snprintf(params, sizeof(params), "%d %d %d %d %ld %llu",
+	    MAJ, MIN, REV, a->cmd, a->memlimit, a->opslimit);
+	if (len > HEADER_PARAM_SIZE)
+		errx(1, "header params exceed size limit %ld", len);
 
-	if (fwrite(h, sizeof(struct ankh_header), 1, a->fout) != 1)
-		errx(1, "failure to write header");
+	if (fwrite(params, HEADER_PARAM_SIZE, 1, a->fout) != 1)
+		errx(1, "failure to write header params");
+
+	if (fwrite(a->salt, sizeof(a->salt), 1, a->fout) != 1)
+		errx(1, "failure to write header salt");
 
 	return 0;
 }
@@ -761,10 +769,10 @@ int
 sealed_box(struct ankh *a)
 {
 	size_t ctlen;
-	struct ankh_header h;
 	unsigned char *ct;
 
-	memset(&h, 0, sizeof(h));
+	a->memlimit = 0;
+	a->opslimit = 0;
 
 	ctlen = sizeof(a->key) + crypto_box_SEALBYTES;
 	if ((ct = malloc(ctlen)) == NULL)
@@ -772,7 +780,7 @@ sealed_box(struct ankh *a)
 	memset(ct, 0, ctlen);
 
 	if (a->enc) {
-		header_write(a, &h);
+		header_write(a);
 		load_pubkey(a);
 		/* Generate random key. */
 		arc4random_buf(a->key, sizeof(a->key));
@@ -780,7 +788,7 @@ sealed_box(struct ankh *a)
 		crypto_box_seal(ct, a->key, sizeof(a->key), a->pubkey);
 		fwrite(ct, ctlen, 1, a->fout);
 	} else {
-		header_read(a, &h);
+		header_read(a);
 		fread(ct, ctlen, 1, a->fin);
 		load_pubkey(a);
 		load_seckey(a);
@@ -806,13 +814,11 @@ sealed_box(struct ankh *a)
 int
 secret_key(struct ankh *a)
 {
-	struct ankh_header h;
-
 	/* Get the salt. */
 	if (a->enc)
 		arc4random_buf(a->salt, sizeof(a->salt));
 	else
-		header_read(a, &h);
+		header_read(a);
 
 	/* Read passphrase. */
 	if (a->keyfile[0] != '\0')
@@ -833,7 +839,7 @@ secret_key(struct ankh *a)
 
 	/* Write header info. */
 	if (a->enc)
-		header_write(a, &h);
+		header_write(a);
 
 	/* Perform the crypto operation. */
 	cipher(a);

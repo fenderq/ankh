@@ -362,7 +362,7 @@ header_read(struct ankh *a)
 
 	/* Parameters. */
 	if (fread(params, HEADER_PARAM_SIZE, 1, a->fin) != 1)
-		errx(1, "failure to read header params");
+		errx(1, "failure to read header parameters");
 
 	sscanf(params, "%d %d %d %d %ld %llu",
 	    &v[0], &v[1], &v[2], &cmd, &a->memlimit, &a->opslimit);

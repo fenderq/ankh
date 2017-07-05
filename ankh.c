@@ -334,7 +334,6 @@ getid(char *str, size_t size)
 	pw = getpwuid(uid);
 	user = pw ? pw->pw_name : "unknown";
 	snprintf(str, size, "%s@%s", user, host);
-	fprintf(stderr, "%s\n", str);
 
 	return str;
 }

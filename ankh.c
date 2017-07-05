@@ -15,13 +15,16 @@
  */
 
 #include <sys/queue.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include <err.h>
+#include <pwd.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-#include <readpassphrase.h>
 #include <unistd.h>
+#include <readpassphrase.h>
 
 #include <sodium.h>
 
@@ -89,6 +92,7 @@ __dead void usage(void);
 int	 cipher(struct ankh *);
 int	 do_command(struct ankh *);
 int	 generate_key_pair(struct ankh *);
+char	*getid(char *, size_t);
 int	 header_read(struct ankh *);
 int	 header_write(struct ankh *);
 int	 load_pubkey(struct ankh *);
@@ -113,7 +117,7 @@ main(int argc, char *argv[])
 	const char *ep;
 	int mode;
 
-	if (pledge("cpath rpath stdio tty wpath", NULL) == -1)
+	if (pledge("cpath getpw rpath stdio tty wpath", NULL) == -1)
 		err(1, "pledge");
 
 	mode = DEFAULT_MODE;
@@ -313,6 +317,26 @@ generate_key_pair(struct ankh *a)
 	explicit_bzero(a->seckey, sizeof(a->seckey));
 
 	return 0;
+}
+
+char *
+getid(char *str, size_t size)
+{
+	char *user;
+	char host[STRING_MAX];
+	struct passwd *pw;
+	uid_t uid;
+
+	memset(str, 0, size);
+	if (gethostname(host, sizeof(host)) == -1)
+		err(1, NULL);
+	uid = getuid();
+	pw = getpwuid(uid);
+	user = pw ? pw->pw_name : "unknown";
+	snprintf(str, size, "%s@%s", user, host);
+	fprintf(stderr, "%s\n", str);
+
+	return str;
 }
 
 int
@@ -664,10 +688,12 @@ save_pubkey(struct ankh *a)
 {
 	FILE *fp;
 	char *hex;
+	char id[STRING_MAX];
 	char now[STRING_MAX];
 	size_t hexsize;
 	time_t t;
 
+	memset(id, 0, sizeof(id));
 	hexsize = sizeof(a->pubkey) * 2 + 1;
 	if ((hex = malloc(hexsize)) == NULL)
 		err(1, NULL);
@@ -676,7 +702,9 @@ save_pubkey(struct ankh *a)
 		err(1, "%s", a->pubfile);
 	time(&t);
 	str_time(now, sizeof(now), t);
-	fprintf(fp, "# %s public key\n# %s\n", getprogname(), now);
+	getid(id, sizeof(id));
+	fprintf(fp, "# %s public key\n# %s\n# %s\n",
+	    getprogname(), now, id);
 	fprintf(fp, "key: %s\n", hex);
 	fclose(fp);
 	free(hex);
@@ -689,11 +717,15 @@ save_seckey(struct ankh *a)
 {
 	FILE *fp;
 	char *hex;
+	char id[STRING_MAX];
 	char now[STRING_MAX];
+	mode_t mask;
 	size_t ctlen;
 	size_t hexsize;
 	time_t t;
 	unsigned char *ct;
+
+	mask = umask(077);
 
 	/* Open secret key file. */
 	if ((fp = fopen(a->secfile, "w")) == NULL)
@@ -730,7 +762,9 @@ save_seckey(struct ankh *a)
 	/* Write our secret key file. */
 	time(&t);
 	str_time(now, sizeof(now), t);
-	fprintf(fp, "# %s secret key\n# %s\n", getprogname(), now);
+	getid(id, sizeof(id));
+	fprintf(fp, "# %s secret key\n# %s\n# %s\n",
+	    getprogname(), now, id);
 
 	fprintf(fp, "opslimit: %llu\n", a->opslimit);
 	fprintf(fp, "memlimit: %ld\n", a->memlimit);
@@ -761,6 +795,8 @@ save_seckey(struct ankh *a)
 
 	free(ct);
 	fclose(fp);
+
+	umask(mask);
 
 	return 0;
 }

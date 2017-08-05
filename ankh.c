@@ -59,6 +59,7 @@ struct ankh {
 	char secfile[PATH_MAX];
 	enum command cmd;
 	int enc;
+	int mode;
 	size_t memlimit;
 	unsigned char key[crypto_secretbox_KEYBYTES];
 	unsigned char pubkey[crypto_box_PUBLICKEYBYTES];
@@ -87,6 +88,7 @@ unsigned char magic[] = {
 __dead void usage(void);
 
 int	 	 cipher(struct ankh *);
+void		 cleanup(void);
 int	 	 do_command(struct ankh *);
 int	 	 generate_key_pair(struct ankh *);
 char		*getid(char *, size_t);
@@ -105,7 +107,7 @@ int	 	 save_pubkey(struct ankh *);
 int	 	 save_seckey(struct ankh *);
 int	 	 sealed_box(struct ankh *);
 int	 	 secret_key(struct ankh *);
-void	 	 set_mode(struct ankh *, int);
+void	 	 set_mode(struct ankh *);
 char		*str_time(char *, size_t, time_t);
 const char	*version(void);
 
@@ -118,18 +120,20 @@ main(int argc, char *argv[])
 {
 	char ch;
 	const char *ep;
-	int mode;
 
 	if (pledge("cpath getpw rpath stdio tty wpath", NULL) == -1)
 		err(1, "pledge");
 
-	mode = DEFAULT_MODE;
-
 	if ((adp = calloc(1, sizeof(struct ankh))) == NULL)
 		err(1, NULL);
 
+	atexit(cleanup);
+
 	adp->cmd = CMD_UNDEFINED;
 	adp->enc = 1;
+	adp->fin = stdin;
+	adp->fout = stdout;
+	adp->mode = DEFAULT_MODE;
 
 	if (sodium_init() == -1)
 		errx(1, "libsodium init error");
@@ -168,7 +172,7 @@ main(int argc, char *argv[])
 			strlcpy(adp->keyfile, optarg, sizeof(adp->keyfile));
 			break;
 		case 'm':
-			mode = strtonum(optarg, 1, 3, &ep);
+			adp->mode = strtonum(optarg, 1, 3, &ep);
 			if (ep != NULL)
 				errx(1, "mode %s", ep);
 			break;
@@ -189,11 +193,7 @@ main(int argc, char *argv[])
 	argc -= optind;
 	argv += optind;
 
-	adp->fin = stdin;
-	adp->fout = stdout;
-	set_mode(adp, mode);
 	do_command(adp);
-	freezero(adp, sizeof(struct ankh));
 
 	exit(EXIT_SUCCESS);
 }
@@ -261,6 +261,12 @@ cipher(struct ankh *a)
 	return 0;
 }
 
+void
+cleanup(void)
+{
+	freezero(adp, sizeof(struct ankh));
+}
+
 int
 do_command(struct ankh *a)
 {
@@ -269,6 +275,7 @@ do_command(struct ankh *a)
 		usage();
 		break;
 	case CMD_GENERATE_KEY_PAIR:
+		set_mode(a);
 		generate_key_pair(a);
 		break;
 	case CMD_PUBLIC_KEY:
@@ -278,6 +285,7 @@ do_command(struct ankh *a)
 		sealed_box(a);
 		break;
 	case CMD_SECRET_KEY:
+		set_mode(a);
 		secret_key(a);
 		break;
 	case CMD_VERSION:
@@ -429,15 +437,20 @@ load_seckey(struct ankh *a)
 {
 	FILE *fp;
 	char *line;
+	char passwd[PASSWD_MAX];
 	const char *ep;
 	const char *name;
 	size_t ctlen;
 	size_t linesize;
+	size_t memlimit;
 	ssize_t linelen;
 	struct nvp *np;
 	struct nvplist lines;
 	unsigned char *ct;
+	unsigned char key[crypto_secretbox_KEYBYTES];
 	unsigned char nonce[crypto_secretbox_NONCEBYTES];
+	unsigned char salt[crypto_pwhash_SALTBYTES];
+	unsigned long long opslimit;
 
 	SLIST_INIT(&lines);
 
@@ -468,22 +481,22 @@ load_seckey(struct ankh *a)
 	name = "opslimit";
 	if (nvp_find(name, &lines, &np) != 0)
 		errx(1, "missing %s in %s", name, a->secfile);
-	a->opslimit = strtonum(np->value, 1, LONG_MAX, &ep);
+	opslimit = strtonum(np->value, 1, LONG_MAX, &ep);
 	if (ep != NULL)
 		errx(1, "opslimit %s", ep);
 
 	name = "memlimit";
 	if (nvp_find(name, &lines, &np) != 0)
 		errx(1, "missing %s in %s", name, a->secfile);
-	a->memlimit = strtonum(np->value, 1, LONG_MAX, &ep);
+	memlimit = strtonum(np->value, 1, LONG_MAX, &ep);
 	if (ep != NULL)
 		errx(1, "memlimit %s", ep);
 
 	name = "salt";
 	if (nvp_find(name, &lines, &np) != 0)
 		errx(1, "missing %s in %s", name, a->secfile);
-	if (sodium_hex2bin(a->salt, sizeof(a->salt), np->value,
-	    strlen(np->value), NULL, NULL, NULL) != 0)
+	if (sodium_hex2bin(salt, sizeof(salt), np->value, strlen(np->value),
+	    NULL, NULL, NULL) != 0)
 		errx(1, "invalid data: %s", np->value);
 
 	name = "nonce";
@@ -508,25 +521,24 @@ load_seckey(struct ankh *a)
 
 	/* Read in passphrase. */
 	if (a->keyfile[0] != '\0')
-		passwd_read_file(a->passwd, sizeof(a->passwd), a->keyfile);
+		passwd_read_file(passwd, sizeof(passwd), a->keyfile);
 	else
-		passwd_read_tty(a->passwd, sizeof(a->passwd), 0);
+		passwd_read_tty(passwd, sizeof(passwd), 0);
 
 	/* Generate key from passphrase. */
-	if (crypto_pwhash(a->key, sizeof(a->key), a->passwd, strlen(a->passwd),
-	    a->salt, a->opslimit, a->memlimit, crypto_pwhash_ALG_DEFAULT) != 0)
-		errx(1, "libsodium crypto_pwhash: out of memory");
+	if (crypto_pwhash(key, sizeof(key), passwd, strlen(passwd),
+	    salt, opslimit, memlimit, crypto_pwhash_ALG_DEFAULT) != 0)
+		errx(1, "crypto_pwhash error (check memory limits)");
 
 	/* Clear passphrase from memory. */
-	explicit_bzero(a->passwd, sizeof(a->passwd));
+	explicit_bzero(passwd, sizeof(passwd));
 
 	/* Decrypt the secret key. */
-	if (crypto_secretbox_open_easy(a->seckey, ct, ctlen, nonce,
-	    a->key) != 0)
-		errx(1, "invalid secret key");
+	if (crypto_secretbox_open_easy(a->seckey, ct, ctlen, nonce, key) != 0)
+		errx(1, "invalid passphrase");
 
 	/* Clear key from memory. */
-	explicit_bzero(a->key, sizeof(a->key));
+	explicit_bzero(key, sizeof(key));
 
 	free(ct);
 
@@ -677,9 +689,6 @@ public_key(struct ankh *a)
 	unsigned char *ct;
 	unsigned char nonce[crypto_secretbox_NONCEBYTES];
 
-	a->memlimit = 0;
-	a->opslimit = 0;
-
 	ctlen = sizeof(a->key) + crypto_box_MACBYTES;
 	if ((ct = malloc(ctlen)) == NULL)
 		err(1, NULL);
@@ -771,12 +780,15 @@ save_seckey(struct ankh *a)
 	char *hex;
 	char id[STRING_MAX];
 	char now[STRING_MAX];
+	char passwd[PASSWD_MAX];
 	mode_t mask;
 	size_t ctlen;
 	size_t hexsize;
 	time_t t;
 	unsigned char *ct;
+	unsigned char key[crypto_secretbox_KEYBYTES];
 	unsigned char nonce[crypto_secretbox_NONCEBYTES];
+	unsigned char salt[crypto_pwhash_SALTBYTES];
 
 	mask = umask(077);
 
@@ -791,26 +803,26 @@ save_seckey(struct ankh *a)
 
 	/* Random nonce and salt. */
 	arc4random_buf(nonce, sizeof(nonce));
-	arc4random_buf(a->salt, sizeof(a->salt));
+	arc4random_buf(salt, sizeof(salt));
 
 	/* Read in passphrase. */
 	if (a->keyfile[0] != '\0')
-		passwd_read_file(a->passwd, sizeof(a->passwd), a->keyfile);
+		passwd_read_file(passwd, sizeof(passwd), a->keyfile);
 	else
-		passwd_read_tty(a->passwd, sizeof(a->passwd), 1);
+		passwd_read_tty(passwd, sizeof(passwd), 1);
 
 	/* Generate key from passphrase. */
-	if (crypto_pwhash(a->key, sizeof(a->key), a->passwd, strlen(a->passwd),
-	    a->salt, a->opslimit, a->memlimit, crypto_pwhash_ALG_DEFAULT) != 0)
-		errx(1, "libsodium crypto_pwhash: out of memory");
+	if (crypto_pwhash(key, sizeof(key), passwd, strlen(passwd),
+	    salt, a->opslimit, a->memlimit, crypto_pwhash_ALG_DEFAULT) != 0)
+		errx(1, "crypto_pwhash error (check memory limits)");
 
 	/* Clear passphrase from memory. */
-	explicit_bzero(a->passwd, sizeof(a->passwd));
+	explicit_bzero(passwd, sizeof(passwd));
 
 	/* Encrypt secret key. */
 	crypto_secretbox_easy(ct, a->seckey, sizeof(a->seckey),
-	    nonce, a->key);
-	explicit_bzero(a->key, sizeof(a->key));
+	    nonce, key);
+	explicit_bzero(key, sizeof(key));
 
 	/* Write our secret key file. */
 	time(&t);
@@ -823,10 +835,10 @@ save_seckey(struct ankh *a)
 	fprintf(fp, "memlimit: %ld\n", a->memlimit);
 
 	/* Salt. */
-	hexsize = sizeof(a->salt) * 2 + 1;
+	hexsize = sizeof(salt) * 2 + 1;
 	if ((hex = malloc(hexsize)) == NULL)
 		err(1, NULL);
-	sodium_bin2hex(hex, hexsize, a->salt, sizeof(a->salt));
+	sodium_bin2hex(hex, hexsize, salt, sizeof(salt));
 	fprintf(fp, "salt: %s\n", hex);
 	free(hex);
 
@@ -859,9 +871,6 @@ sealed_box(struct ankh *a)
 {
 	size_t ctlen;
 	unsigned char *ct;
-
-	a->memlimit = 0;
-	a->opslimit = 0;
 
 	ctlen = sizeof(a->key) + crypto_box_SEALBYTES;
 	if ((ct = malloc(ctlen)) == NULL)
@@ -920,7 +929,7 @@ secret_key(struct ankh *a)
 	/* Generate key from passphrase. */
 	if (crypto_pwhash(a->key, sizeof(a->key), a->passwd, strlen(a->passwd),
 	    a->salt, a->opslimit, a->memlimit, crypto_pwhash_ALG_DEFAULT) != 0)
-		errx(1, "libsodium crypto_pwhash: out of memory");
+		errx(1, "crypto_pwhash error (check memory limits)");
 
 	/* Zero passphrase in memory. */
 	explicit_bzero(a->passwd, sizeof(a->passwd));
@@ -950,9 +959,9 @@ secret_key(struct ankh *a)
  * See libsodium crypto_pwhash documentation.
  */
 void
-set_mode(struct ankh *a, int mode)
+set_mode(struct ankh *a)
 {
-	switch (mode) {
+	switch (a->mode) {
 	case 1:
 		a->opslimit = crypto_pwhash_OPSLIMIT_INTERACTIVE;
 		a->memlimit = crypto_pwhash_MEMLIMIT_INTERACTIVE;
@@ -966,7 +975,7 @@ set_mode(struct ankh *a, int mode)
 		a->memlimit = crypto_pwhash_MEMLIMIT_SENSITIVE;
 		break;
 	default:
-		errx(1, "undefined mode %d", mode);
+		errx(1, "undefined mode %d", a->mode);
 		break;
 	}
 }

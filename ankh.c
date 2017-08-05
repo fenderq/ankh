@@ -94,6 +94,8 @@ int	 	 generate_key_pair(struct ankh *);
 char		*getid(char *, size_t);
 int	 	 header_read(struct ankh *);
 int	 	 header_write(struct ankh *);
+int		 kdf(unsigned char *, char *, unsigned char *,
+		     unsigned long long, size_t, int);
 int	 	 load_pubkey(struct ankh *);
 int	 	 load_seckey(struct ankh *);
 int	 	 nvp_add(char *, char *, struct nvplist *);
@@ -437,7 +439,6 @@ load_seckey(struct ankh *a)
 {
 	FILE *fp;
 	char *line;
-	char passwd[PASSWD_MAX];
 	const char *ep;
 	const char *name;
 	size_t ctlen;
@@ -519,19 +520,7 @@ load_seckey(struct ankh *a)
 	/* Free lines. */
 	nvp_free(&lines);
 
-	/* Read in passphrase. */
-	if (a->keyfile[0] != '\0')
-		passwd_read_file(passwd, sizeof(passwd), a->keyfile);
-	else
-		passwd_read_tty(passwd, sizeof(passwd), 0);
-
-	/* Generate key from passphrase. */
-	if (crypto_pwhash(key, sizeof(key), passwd, strlen(passwd),
-	    salt, opslimit, memlimit, crypto_pwhash_ALG_DEFAULT) != 0)
-		errx(1, "crypto_pwhash error (check memory limits)");
-
-	/* Clear passphrase from memory. */
-	explicit_bzero(passwd, sizeof(passwd));
+	kdf(key, a->keyfile, salt, opslimit, memlimit, 0);
 
 	/* Decrypt the secret key. */
 	if (crypto_secretbox_open_easy(a->seckey, ct, ctlen, nonce, key) != 0)
@@ -698,27 +687,24 @@ public_key(struct ankh *a)
 	load_seckey(a);
 
 	if (a->enc) {
+		header_write(a);
 		arc4random_buf(a->key, sizeof(a->key));
 		arc4random_buf(nonce, sizeof(nonce));
-
-		header_write(a);
-
+		/* Encrypt cipher key. */
 		if (crypto_box_easy(ct, a->key, sizeof(a->key), nonce,
 		    a->pubkey, a->seckey) != 0)
 			err(1, "crypto_box_easy");
-
 		if (fwrite(nonce, sizeof(nonce), 1, a->fout) != 1)
 			err(1, NULL);
 		if (fwrite(ct, ctlen, 1, a->fout) != 1)
 			err(1, NULL);
 	} else {
 		header_read(a);
-
 		if (fread(nonce, sizeof(nonce), 1, a->fin) != 1)
 			err(1, NULL);
 		if (fread(ct, ctlen, 1, a->fin) != 1)
 			err(1, NULL);
-
+		/* Decrypt cipher key. */
 		if (crypto_box_open_easy(a->key, ct, ctlen, nonce,
 		    a->pubkey, a->seckey) != 0)
 			errx(1, "crypto_box_easy_open");
@@ -731,8 +717,6 @@ public_key(struct ankh *a)
 		err(1, "pledge");
 
 	cipher(a);
-
-	explicit_bzero(a->key, sizeof(a->key));
 
 	return 0;
 }
@@ -780,7 +764,6 @@ save_seckey(struct ankh *a)
 	char *hex;
 	char id[STRING_MAX];
 	char now[STRING_MAX];
-	char passwd[PASSWD_MAX];
 	mode_t mask;
 	size_t ctlen;
 	size_t hexsize;
@@ -805,19 +788,7 @@ save_seckey(struct ankh *a)
 	arc4random_buf(nonce, sizeof(nonce));
 	arc4random_buf(salt, sizeof(salt));
 
-	/* Read in passphrase. */
-	if (a->keyfile[0] != '\0')
-		passwd_read_file(passwd, sizeof(passwd), a->keyfile);
-	else
-		passwd_read_tty(passwd, sizeof(passwd), 1);
-
-	/* Generate key from passphrase. */
-	if (crypto_pwhash(key, sizeof(key), passwd, strlen(passwd),
-	    salt, a->opslimit, a->memlimit, crypto_pwhash_ALG_DEFAULT) != 0)
-		errx(1, "crypto_pwhash error (check memory limits)");
-
-	/* Clear passphrase from memory. */
-	explicit_bzero(passwd, sizeof(passwd));
+	kdf(key, a->keyfile, salt, a->opslimit, a->memlimit, 1);
 
 	/* Encrypt secret key. */
 	crypto_secretbox_easy(ct, a->seckey, sizeof(a->seckey),
@@ -880,16 +851,18 @@ sealed_box(struct ankh *a)
 	load_pubkey(a);
 
 	if (a->enc) {
-		arc4random_buf(a->key, sizeof(a->key));
 		header_write(a);
+		arc4random_buf(a->key, sizeof(a->key));
+		/* Encrypt cipher key. */
 		crypto_box_seal(ct, a->key, sizeof(a->key), a->pubkey);
 		if (fwrite(ct, ctlen, 1, a->fout) != 1)
 			err(1, "failure to write sealed box");
 	} else {
-		load_seckey(a);
 		header_read(a);
 		if (fread(ct, ctlen, 1, a->fin) != 1)
 			err(1, "failure to read sealed box");
+		load_seckey(a);
+		/* Decrypt cipher key. */
 		if (crypto_box_seal_open(a->key, ct, ctlen,
 		    a->pubkey, a->seckey) != 0)
 			errx(1, "crypto_box_seal_open error");
@@ -903,51 +876,29 @@ sealed_box(struct ankh *a)
 
 	cipher(a);
 
-	explicit_bzero(a->key, sizeof(a->key));
-
 	return 0;
 }
 
 int
 secret_key(struct ankh *a)
 {
-	/* Get the salt. */
-	if (a->enc)
+	if (a->enc) {
+		header_write(a);
 		arc4random_buf(a->salt, sizeof(a->salt));
-	else {
+		if (fwrite(a->salt, sizeof(a->salt), 1, a->fout) != 1)
+			errx(1, "failure to write salt");
+	} else {
 		header_read(a);
 		if (fread(a->salt, sizeof(a->salt), 1, a->fin) != 1)
 			errx(1, "failure to read salt");
 	}
 
-	/* Read passphrase. */
-	if (a->keyfile[0] != '\0')
-		passwd_read_file(a->passwd, sizeof(a->passwd), a->keyfile);
-	else
-		passwd_read_tty(a->passwd, sizeof(a->passwd), a->enc ? 1 : 0);
-
-	/* Generate key from passphrase. */
-	if (crypto_pwhash(a->key, sizeof(a->key), a->passwd, strlen(a->passwd),
-	    a->salt, a->opslimit, a->memlimit, crypto_pwhash_ALG_DEFAULT) != 0)
-		errx(1, "crypto_pwhash error (check memory limits)");
-
-	/* Zero passphrase in memory. */
-	explicit_bzero(a->passwd, sizeof(a->passwd));
+	kdf(a->key, a->keyfile, a->salt, a->opslimit, a->memlimit, a->enc);
 
 	if (pledge("stdio", NULL) == -1)
 		err(1, "pledge");
 
-	/* Write header info and salt. */
-	if (a->enc) {
-		header_write(a);
-		if (fwrite(a->salt, sizeof(a->salt), 1, a->fout) != 1)
-			errx(1, "failure to write salt");
-	}
-
-	/* Perform the crypto operation. */
 	cipher(a);
-
-	explicit_bzero(a->key, sizeof(a->key));
 
 	return 0;
 }
@@ -1002,4 +953,25 @@ version(void)
 		snprintf(v, sizeof(v), "%d.%d.%d", MAJ, MIN, REV);
 
 	return v;
+}
+
+int
+kdf(unsigned char *key, char *keyfile, unsigned char *salt,
+    unsigned long long opslimit, size_t memlimit, int confirm)
+{
+	char passwd[PASSWD_MAX];
+
+	if (keyfile && keyfile[0] != '\0')
+		passwd_read_file(passwd, sizeof(passwd), keyfile);
+	else
+		passwd_read_tty(passwd, sizeof(passwd), confirm);
+
+	if (crypto_pwhash(key, crypto_secretbox_KEYBYTES, passwd,
+	    strlen(passwd), salt, opslimit, memlimit,
+	    crypto_pwhash_ALG_DEFAULT) != 0)
+		errx(1, "crypto_pwhash error (check memory limits)");
+
+	explicit_bzero(passwd, sizeof(passwd));
+
+	return 0;
 }

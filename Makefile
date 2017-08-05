@@ -11,33 +11,41 @@ CFLAGS+=	-I/usr/local/include
 LDADD=		-L/usr/local/lib -lsodium
 
 BINDIR=		/usr/local/bin
-#MANDIR=		/usr/local/man/man
 NOMAN=		noman
 
-infile=		foo.bin
+alice_pk=	alice.pub
+alice_sk=	alice.sec
+bob_pk=		bob.pub
+bob_sk=		bob.sec
+ciphertext=	ciphertext.ankh
 mode=		1
-outfile=	bar.bin
-pubkey=		ankh.pub
-seckey=		ankh.sec
-secret=		secret.passphrase
+passwd=		secret.passphrase
+plaintext=	plaintext.bin
 testsize=	bs=$$(($$RANDOM % 8192 + 1)) count=$$(($$RANDOM % 8192 + 1024))
 
 test: ${PROG}
 	# generate random sample data
-	dd if=/dev/random of=${infile} ${testsize}
-	sha256 ${infile} | tee SHA256
+	dd if=/dev/random of=${plaintext} ${testsize}
+	sha256 ${plaintext} | tee SHA256
 	# generate random passphrase
-	tr -cd [:graph:] < /dev/random | fold -bw 40 | head -1 | tee ${secret}
-	# test secret key
-	./${PROG} -K -m ${mode} -k ${secret} < ${infile} > ${outfile}
-	./${PROG} -K -d -m ${mode} -k ${secret} < ${outfile} > ${infile}
+	tr -cd [:graph:] < /dev/random | fold -bw 40 | head -1 | tee ${passwd}
+	# generate key pairs
+	./${PROG} -G -p ${alice_pk} -s ${alice_sk} -m ${mode} -k ${passwd}
+	./${PROG} -G -p ${bob_pk} -s ${bob_sk} -m ${mode} -k ${passwd}
+	# test public key
+	./${PROG} -P -p ${bob_pk} -s ${alice_sk} -k ${passwd}\
+	    < ${plaintext} > ${ciphertext}
+	./${PROG} -P -p ${alice_pk} -s ${bob_sk} -k ${passwd} -d\
+	    < ${ciphertext} > ${plaintext}
 	sha256 -c SHA256
-	# generate key pair
-	./${PROG} -G -p ${pubkey} -s ${seckey} -m ${mode} -k ${secret}
 	# test sealed box
-	./${PROG} -B -p ${pubkey} -k ${secret} < ${infile} > ${outfile}
-	./${PROG} -B -p ${pubkey} -k ${secret} -s ${seckey} -d \
-	    < ${outfile} > ${infile}
+	./${PROG} -B -p ${alice_pk} -k ${passwd} < ${plaintext} > ${ciphertext}
+	./${PROG} -B -p ${alice_pk} -s ${alice_sk} -k ${passwd} -d\
+	    < ${ciphertext} > ${plaintext}
+	sha256 -c SHA256
+	# test secret key
+	./${PROG} -S -m ${mode} -k ${passwd} < ${plaintext} > ${ciphertext}
+	./${PROG} -S -d -m ${mode} -k ${passwd} < ${ciphertext} > ${plaintext}
 	sha256 -c SHA256
 
 .include <bsd.prog.mk>

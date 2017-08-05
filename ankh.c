@@ -38,17 +38,15 @@
 #define STRING_MAX 256
 
 #define MAJ 2
-#define MIN 1
+#define MIN 3
 #define REV 0
 
 enum command {
 	CMD_UNDEFINED,
 	CMD_GENERATE_KEY_PAIR,
-	CMD_HASH,
 	CMD_PUBLIC_KEY,
 	CMD_SEALED_BOX,
 	CMD_SECRET_KEY,
-	CMD_SIGNATURE,
 	CMD_VERSION
 };
 
@@ -63,7 +61,6 @@ struct ankh {
 	int enc;
 	size_t memlimit;
 	unsigned char key[crypto_secretbox_KEYBYTES];
-	unsigned char nonce[crypto_secretbox_NONCEBYTES];
 	unsigned char pubkey[crypto_box_PUBLICKEYBYTES];
 	unsigned char salt[crypto_pwhash_SALTBYTES];
 	unsigned char seckey[crypto_box_SECRETKEYBYTES];
@@ -103,6 +100,7 @@ void	 	 nvp_free(struct nvplist *);
 int	 	 passwd_read_file(char *, size_t, char *);
 int	 	 passwd_read_tty(char *, size_t, int);
 void	 	 print_value(char *, unsigned char *, int);
+int		 public_key(struct ankh *);
 int	 	 save_pubkey(struct ankh *);
 int	 	 save_seckey(struct ankh *);
 int	 	 sealed_box(struct ankh *);
@@ -148,12 +146,7 @@ main(int argc, char *argv[])
 				usage();
 			adp->cmd = CMD_GENERATE_KEY_PAIR;
 			break;
-		case 'H':
-			if (adp->cmd != CMD_UNDEFINED)
-				usage();
-			adp->cmd = CMD_HASH;
-			break;
-		case 'K':
+		case 'S':
 			if (adp->cmd != CMD_UNDEFINED)
 				usage();
 			adp->cmd = CMD_SECRET_KEY;
@@ -162,11 +155,6 @@ main(int argc, char *argv[])
 			if (adp->cmd != CMD_UNDEFINED)
 				usage();
 			adp->cmd = CMD_PUBLIC_KEY;
-			break;
-		case 'S':
-			if (adp->cmd != CMD_UNDEFINED)
-				usage();
-			adp->cmd = CMD_SIGNATURE;
 			break;
 		case 'V':
 			if (adp->cmd != CMD_UNDEFINED)
@@ -213,19 +201,11 @@ main(int argc, char *argv[])
 void
 usage(void)
 {
-	/*
-		ankh K (secret key) [-dikmo]
-		ankh G (generate key pair) [-km] -p -s
-		ankh B (sealed box) [-diko] -p -s
-		ankh P (public key) [-diko] -p -s
-		ankh S (signature) [-iko] -p -s
-		ankh H (hash) [-io]
-		ankh V (version)
-	 */
 	fprintf(stderr, "usage:"
-	    "\t%1$s -K [-dkm]\n"
-	    "\t%1$s -G [-km] -s seckey -p pubkey\n"
 	    "\t%1$s -B [-dk] [-s seckey] -p pubkey\n"
+	    "\t%1$s -G [-km] -s seckey -p pubkey\n"
+	    "\t%1$s -P [-dk] -s seckey -p pubkey\n"
+	    "\t%1$s -S [-dkm]\n"
 	    "\t%1$s -V\n",
 	    getprogname());
 
@@ -291,17 +271,14 @@ do_command(struct ankh *a)
 	case CMD_GENERATE_KEY_PAIR:
 		generate_key_pair(a);
 		break;
-	case CMD_HASH:
-		break;
 	case CMD_PUBLIC_KEY:
+		public_key(a);
 		break;
 	case CMD_SEALED_BOX:
 		sealed_box(a);
 		break;
 	case CMD_SECRET_KEY:
 		secret_key(a);
-		break;
-	case CMD_SIGNATURE:
 		break;
 	case CMD_VERSION:
 		printf("%s %s (libsodium %s)\n", getprogname(),
@@ -460,6 +437,7 @@ load_seckey(struct ankh *a)
 	struct nvp *np;
 	struct nvplist lines;
 	unsigned char *ct;
+	unsigned char nonce[crypto_secretbox_NONCEBYTES];
 
 	SLIST_INIT(&lines);
 
@@ -511,7 +489,7 @@ load_seckey(struct ankh *a)
 	name = "nonce";
 	if (nvp_find(name, &lines, &np) != 0)
 		errx(1, "missing %s in %s", name, a->secfile);
-	if (sodium_hex2bin(a->nonce, sizeof(a->nonce), np->value,
+	if (sodium_hex2bin(nonce, sizeof(nonce), np->value,
 	    strlen(np->value), NULL, NULL, NULL) != 0)
 		errx(1, "invalid data: %s", np->value);
 
@@ -543,7 +521,7 @@ load_seckey(struct ankh *a)
 	explicit_bzero(a->passwd, sizeof(a->passwd));
 
 	/* Decrypt the secret key. */
-	if (crypto_secretbox_open_easy(a->seckey, ct, ctlen, a->nonce,
+	if (crypto_secretbox_open_easy(a->seckey, ct, ctlen, nonce,
 	    a->key) != 0)
 		errx(1, "invalid secret key");
 
@@ -627,7 +605,6 @@ passwd_read_file(char *pass, size_t size, char *fname)
 	while ((linelen = getline(&line, &linesize, fp)) != -1) {
 		line[strcspn(line, "\n")] = '\0';
 		strlcpy(pass, line, size);
-		explicit_bzero(line, linesize);
 		linecount++;
 	}
 
@@ -642,7 +619,7 @@ passwd_read_file(char *pass, size_t size, char *fname)
 	if (passlen < PASSWD_MIN)
 		errx(1, "password too small");
 
-	free(line);
+	freezero(line, linesize);
 
 	if (ferror(fp))
 		err(1, "%s", fname);
@@ -689,8 +666,66 @@ print_value(char *name, unsigned char *bin, int size)
 	char hex[MAX_LINE];
 
 	sodium_bin2hex(hex, sizeof(hex), bin, size);
-	printf("%s = %s\n", name, hex);
+	fprintf(stderr, "%s = %s\n", name, hex);
 	explicit_bzero(hex, sizeof(hex));
+}
+
+int
+public_key(struct ankh *a)
+{
+	size_t ctlen;
+	unsigned char *ct;
+	unsigned char nonce[crypto_secretbox_NONCEBYTES];
+
+	a->memlimit = 0;
+	a->opslimit = 0;
+
+	ctlen = sizeof(a->key) + crypto_box_MACBYTES;
+	if ((ct = malloc(ctlen)) == NULL)
+		err(1, NULL);
+	memset(ct, 0, ctlen);
+
+	load_pubkey(a);
+	load_seckey(a);
+
+	if (a->enc) {
+		arc4random_buf(a->key, sizeof(a->key));
+		arc4random_buf(nonce, sizeof(nonce));
+
+		header_write(a);
+
+		if (crypto_box_easy(ct, a->key, sizeof(a->key), nonce,
+		    a->pubkey, a->seckey) != 0)
+			err(1, "crypto_box_easy");
+
+		if (fwrite(nonce, sizeof(nonce), 1, a->fout) != 1)
+			err(1, NULL);
+		if (fwrite(ct, ctlen, 1, a->fout) != 1)
+			err(1, NULL);
+	} else {
+		header_read(a);
+
+		if (fread(nonce, sizeof(nonce), 1, a->fin) != 1)
+			err(1, NULL);
+		if (fread(ct, ctlen, 1, a->fin) != 1)
+			err(1, NULL);
+
+		if (crypto_box_open_easy(a->key, ct, ctlen, nonce,
+		    a->pubkey, a->seckey) != 0)
+			errx(1, "crypto_box_easy_open");
+	}
+
+	explicit_bzero(a->seckey, sizeof(a->seckey));
+	free(ct);
+
+	if (pledge("stdio", NULL) == -1)
+		err(1, "pledge");
+
+	cipher(a);
+
+	explicit_bzero(a->key, sizeof(a->key));
+
+	return 0;
 }
 
 int
@@ -741,6 +776,7 @@ save_seckey(struct ankh *a)
 	size_t hexsize;
 	time_t t;
 	unsigned char *ct;
+	unsigned char nonce[crypto_secretbox_NONCEBYTES];
 
 	mask = umask(077);
 
@@ -754,7 +790,7 @@ save_seckey(struct ankh *a)
 		err(1, NULL);
 
 	/* Random nonce and salt. */
-	arc4random_buf(a->nonce, sizeof(a->nonce));
+	arc4random_buf(nonce, sizeof(nonce));
 	arc4random_buf(a->salt, sizeof(a->salt));
 
 	/* Read in passphrase. */
@@ -773,7 +809,7 @@ save_seckey(struct ankh *a)
 
 	/* Encrypt secret key. */
 	crypto_secretbox_easy(ct, a->seckey, sizeof(a->seckey),
-	    a->nonce, a->key);
+	    nonce, a->key);
 	explicit_bzero(a->key, sizeof(a->key));
 
 	/* Write our secret key file. */
@@ -795,10 +831,10 @@ save_seckey(struct ankh *a)
 	free(hex);
 
 	/* Nonce. */
-	hexsize = sizeof(a->nonce) * 2 + 1;
+	hexsize = sizeof(nonce) * 2 + 1;
 	if ((hex = malloc(hexsize)) == NULL)
 		err(1, NULL);
-	sodium_bin2hex(hex, hexsize, a->nonce, sizeof(a->nonce));
+	sodium_bin2hex(hex, hexsize, nonce, sizeof(nonce));
 	fprintf(fp, "nonce: %s\n", hex);
 	free(hex);
 
@@ -832,22 +868,19 @@ sealed_box(struct ankh *a)
 		err(1, NULL);
 	memset(ct, 0, ctlen);
 
+	load_pubkey(a);
+
 	if (a->enc) {
-		header_write(a);
-		load_pubkey(a);
-		/* Generate random key. */
 		arc4random_buf(a->key, sizeof(a->key));
-		/* Encrypt random key with public key. */
+		header_write(a);
 		crypto_box_seal(ct, a->key, sizeof(a->key), a->pubkey);
 		if (fwrite(ct, ctlen, 1, a->fout) != 1)
 			err(1, "failure to write sealed box");
 	} else {
+		load_seckey(a);
 		header_read(a);
 		if (fread(ct, ctlen, 1, a->fin) != 1)
 			err(1, "failure to read sealed box");
-		load_pubkey(a);
-		load_seckey(a);
-		/* Decrypt random key with secret key. */
 		if (crypto_box_seal_open(a->key, ct, ctlen,
 		    a->pubkey, a->seckey) != 0)
 			errx(1, "crypto_box_seal_open error");
@@ -859,7 +892,6 @@ sealed_box(struct ankh *a)
 	if (pledge("stdio", NULL) == -1)
 		err(1, "pledge");
 
-	/* Perform the crypto operation. */
 	cipher(a);
 
 	explicit_bzero(a->key, sizeof(a->key));

@@ -54,7 +54,6 @@ struct ankh {
 	FILE *fin;
 	FILE *fout;
 	char keyfile[PATH_MAX];
-	char passwd[PASSWD_MAX];
 	char pubfile[PATH_MAX];
 	char secfile[PATH_MAX];
 	enum command cmd;
@@ -63,7 +62,6 @@ struct ankh {
 	size_t memlimit;
 	unsigned char key[crypto_secretbox_KEYBYTES];
 	unsigned char pubkey[crypto_box_PUBLICKEYBYTES];
-	unsigned char salt[crypto_pwhash_SALTBYTES];
 	unsigned char seckey[crypto_box_SECRETKEYBYTES];
 	unsigned long long opslimit;
 };
@@ -203,6 +201,13 @@ main(int argc, char *argv[])
 void
 usage(void)
 {
+	/*
+	 * -B Sealed Box
+	 * -G Generate Key Pairs
+	 * -P Public Key
+	 * -S Secret Key
+	 * -V Version
+	 */
 	fprintf(stderr, "usage:"
 	    "\t%1$s -B [-dk] [-s seckey] -p pubkey\n"
 	    "\t%1$s -G [-km] -s seckey -p pubkey\n"
@@ -882,18 +887,20 @@ sealed_box(struct ankh *a)
 int
 secret_key(struct ankh *a)
 {
+	unsigned char salt[crypto_pwhash_SALTBYTES];
+
 	if (a->enc) {
 		header_write(a);
-		arc4random_buf(a->salt, sizeof(a->salt));
-		if (fwrite(a->salt, sizeof(a->salt), 1, a->fout) != 1)
+		arc4random_buf(salt, sizeof(salt));
+		if (fwrite(salt, sizeof(salt), 1, a->fout) != 1)
 			errx(1, "failure to write salt");
 	} else {
 		header_read(a);
-		if (fread(a->salt, sizeof(a->salt), 1, a->fin) != 1)
+		if (fread(salt, sizeof(salt), 1, a->fin) != 1)
 			errx(1, "failure to read salt");
 	}
 
-	kdf(a->key, a->keyfile, a->salt, a->opslimit, a->memlimit, a->enc);
+	kdf(a->key, a->keyfile, salt, a->opslimit, a->memlimit, a->enc);
 
 	if (pledge("stdio", NULL) == -1)
 		err(1, "pledge");

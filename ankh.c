@@ -253,7 +253,7 @@ cipher(struct ankh *a)
 		} else {
 			if (crypto_secretbox_open_easy(
 			    buf, buf, bytes, n, a->key) != 0)
-				errx(1, "invalid message data");
+				errx(1, "invalid message data or key");
 			wlen = bytes - crypto_secretbox_MACBYTES;
 		}
 		if (fwrite(buf, wlen, 1, a->fout) == 0)

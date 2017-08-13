@@ -39,7 +39,7 @@
 
 #define MAJ 2
 #define MIN 3
-#define REV 0
+#define REV 1
 
 enum command {
 	CMD_UNDEFINED,

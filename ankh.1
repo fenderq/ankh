@@ -13,59 +13,111 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: February 24 2017 $
+.Dd $Mdocdate: August 13 2017 $
 .Dt ANKH 1
 .Os
 .Sh NAME
 .Nm ankh
-.Nd file encryption utility
+.Nd cryptographically encrypt and decrypt
 .Sh SYNOPSIS
 .Nm ankh
-.Op Fl dv
+.Fl B
+.Op Fl d
+.Op Fl k Ar keyfile
+.Op Fl s Ar seckey
+.Fl p Ar pubkey
+.Nm ankh
+.Fl G
+.Op Fl k Ar keyfile
 .Op Fl m Ar mode
-.Ar infile
-.Ar outfile
+.Fl p Ar pubkey
+.Fl s Ar seckey
+.Nm ankh
+.Fl P
+.Op Fl d
+.Op Fl k Ar keyfile
+.Fl p Ar pubkey
+.Fl s Ar seckey
+.Nm ankh
+.Fl S
+.Op Fl d
+.Op Fl k Ar keyfile
+.Op Fl m Ar mode
+.Nm ankh
+.Fl V
+.\" OLD
 .Sh DESCRIPTION
 The
 .Nm
-utility will read from
-.Ar infile
-and write to
-.Ar outfile .
-Encryption is done by default unless the
-.Fl d
-option is used.
-The
-.Fl m
-option controls the key derivation function.
-The
-.Fl v
-option prints extra details about the operation being performed.
+utility will read from stdin and write to stdout.
+The mode of operation is selected with the following options:
+.Bl -tag -width Dssfoo
+.It Fl B
+Sealed boxes are designed to anonymously send messages to a recipient
+given its public key.
+.It Fl G
+Generate a new key pair.
+Keynames should follow the convention of
+.Pa keyname.pub
+and
+.Pa keyname.sec
+for the public and secret keys, respectively.
+.It Fl P
+Public-key authenticated encryption.
+Using public-key authenticated encryption, Bob can encrypt a confidential
+message specifically for Alice, using Alice's public key.
+.It Fl S
+Secret-key authenticated encryption used to encrypt/sign and verify/decrypt
+messages.
+The key is derived from a passphrase.
+.It Fl V
+Print out version information.
+.El
 .Pp
-The key derivation function uses Argon2i.
-The encryption process uses the XSalsa20 stream cipher.
-Authentication is done with Poly1305 MAC.
-.Pp
-The options are as follows:
-.Bl -tag -width Ds
+The other options are as follows:
+.Bl -tag -width Dsskeyfile
 .It Fl d
-Decrypt the input data.
+Decrypt the stream.
+.It Fl k Ar keyfile
+Read passphrase from
+.Ar keyfile .
 .It Fl m Ar mode
-Modes for the key derivation function.
-.Bl -tag -width compact
-.It Ar 1
-Requires 32 Mb of dedicated RAM
-.It Ar 2
-Requires 128 Mb of dedicated RAM, and takes about 0.7
-seconds on a 2.8 Ghz Core i7 CPU (default)
-.It Ar 3
-Requires 512 Mb of dedicated RAM, and takes about
-3.5 seconds on a 2.8 Ghz Core i7 CPU
+Set the
+.Ar mode
+of the key derivation process.
+This is a numerical value from one of the following:
+.Bl -enum
+.It
+Interactive is the fastest mode.
+This requires 32MB of dedicated RAM.
+.It
+Moderate takes about 0.7 seconds and requires 128MB of dedicated RAM.
+This is the default mode.
+.It
+Sensitive is for highly sensitive data and non-interactive operations.
+This can take about 3.5 seconds and requires 512MB of dedicated RAM.
 .El
-.It Fl v
-Produce verbose output.
 .El
+.Sh EXAMPLES
+Encrypt a file using a passphrase:
+.Dl $ ankh -S < plaintext.file > ciphertext.file
+.Pp
+Decrypt a file using a passphrase:
+.Dl $ ankh -S -d < ciphertext.file > plaintext.file.2
+.Pp
+Generate a new key pair:
+.Dl $ ankh -G -p alice.pub -s alice.sec
+.Pp
+Encrypt a file using sealed box:
+.Dl $ ankh -B -p alice.pub < plaintext.file > ciphertext.file
+.Pp
+Decrypt a file using sealed box:
+.Dl $ ankh -B -p alice.pub -s alice.sec < ciphertext.file > plaintext.file.2
+.Pp
+Encrypt a file from alice to bob using public key:
+.Dl $ ankh -P -p bob.pub -s alice.sec < plaintext.file > ciphertext.file
+.Pp
+Decrypt a file from alice to bob using public key:
+.Dl $ ankh -P -p alice.pub -s bob.sec < ciphertext.file > plaintext.file.2
 .Sh AUTHORS
 .An Steven Roberts <sroberts@fenderq.com>
-.Sh CAVEATS
-The mode is not stored in the encrypted file.

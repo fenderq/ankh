@@ -203,7 +203,7 @@ usage(void)
 {
 	/*
 	 * -B Sealed Box
-	 * -G Generate Key Pairs
+	 * -G Generate Key Pair
 	 * -P Public Key
 	 * -S Secret Key
 	 * -V Version

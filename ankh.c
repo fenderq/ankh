@@ -339,6 +339,7 @@ int
 header_read(struct ankh *a)
 {
 	int cmd;
+	int n;
 	int v[3];
 	unsigned char params[HEADER_PARAM_SIZE + 1];
 	unsigned m[MAGIC_LEN];
@@ -356,11 +357,13 @@ header_read(struct ankh *a)
 	if (fread(params, HEADER_PARAM_SIZE, 1, a->fin) != 1)
 		errx(1, "failure to read header parameters");
 
-	sscanf(params, "%d %d %d %d %ld %llu",
-	    &v[0], &v[1], &v[2], &cmd, &a->memlimit, &a->opslimit);
+	if ((n = sscanf(params, "%d %d %d %d %ld %llu",
+	    &v[0], &v[1], &v[2], &cmd, &a->memlimit, &a->opslimit)) != 6)
+		errx(1, "invalid number of parameters %d", n);
 
+	/* XXX strict version check. */
 	if (v[0] != MAJ || v[1] != MIN || v[2] != REV)
-		errx(1, "invalid file v%d.%d.%d\n", v[0], v[1], v[2]);
+		warnx(1, "data = v%d.%d.%d\n", v[0], v[1], v[2]);
 
 	a->cmd = cmd;
 

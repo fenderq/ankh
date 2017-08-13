@@ -363,7 +363,7 @@ header_read(struct ankh *a)
 
 	/* XXX strict version check. */
 	if (v[0] != MAJ || v[1] != MIN || v[2] != REV)
-		warnx(1, "data = v%d.%d.%d\n", v[0], v[1], v[2]);
+		warnx("data = v%d.%d.%d\n", v[0], v[1], v[2]);
 
 	a->cmd = cmd;
 

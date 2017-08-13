@@ -11,7 +11,7 @@ CFLAGS+=	-I/usr/local/include
 LDADD=		-L/usr/local/lib -lsodium
 
 BINDIR=		/usr/local/bin
-NOMAN=		noman
+MANDIR=		/usr/local/man/man
 
 alice_pk=	alice.pub
 alice_sk=	alice.sec

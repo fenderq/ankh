@@ -681,7 +681,7 @@ public_key(struct ankh *a)
 {
 	size_t ctlen;
 	unsigned char *ct;
-	unsigned char nonce[crypto_secretbox_NONCEBYTES];
+	unsigned char nonce[crypto_box_NONCEBYTES];
 
 	ctlen = sizeof(a->key) + crypto_box_MACBYTES;
 	if ((ct = malloc(ctlen)) == NULL)

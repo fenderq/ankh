@@ -390,6 +390,27 @@ header_write(struct ankh *a)
 }
 
 int
+kdf(unsigned char *key, char *keyfile, unsigned char *salt,
+    unsigned long long opslimit, size_t memlimit, int confirm)
+{
+	char passwd[PASSWD_MAX];
+
+	if (keyfile && keyfile[0] != '\0')
+		passwd_read_file(passwd, sizeof(passwd), keyfile);
+	else
+		passwd_read_tty(passwd, sizeof(passwd), confirm);
+
+	if (crypto_pwhash(key, crypto_secretbox_KEYBYTES, passwd,
+	    strlen(passwd), salt, opslimit, memlimit,
+	    crypto_pwhash_ALG_DEFAULT) != 0)
+		errx(1, "crypto_pwhash error (check memory limits)");
+
+	explicit_bzero(passwd, sizeof(passwd));
+
+	return 0;
+}
+
+int
 load_pubkey(struct ankh *a)
 {
 	FILE *fp;
@@ -960,25 +981,4 @@ version(void)
 		snprintf(v, sizeof(v), "%d.%d.%d", MAJ, MIN, REV);
 
 	return v;
-}
-
-int
-kdf(unsigned char *key, char *keyfile, unsigned char *salt,
-    unsigned long long opslimit, size_t memlimit, int confirm)
-{
-	char passwd[PASSWD_MAX];
-
-	if (keyfile && keyfile[0] != '\0')
-		passwd_read_file(passwd, sizeof(passwd), keyfile);
-	else
-		passwd_read_tty(passwd, sizeof(passwd), confirm);
-
-	if (crypto_pwhash(key, crypto_secretbox_KEYBYTES, passwd,
-	    strlen(passwd), salt, opslimit, memlimit,
-	    crypto_pwhash_ALG_DEFAULT) != 0)
-		errx(1, "crypto_pwhash error (check memory limits)");
-
-	explicit_bzero(passwd, sizeof(passwd));
-
-	return 0;
 }

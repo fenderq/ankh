@@ -1,5 +1,5 @@
 # ankh
-OpenBSD file encryption utility using
+OpenBSD encryption utility using
 [libsodium](https://download.libsodium.org/doc/).
 
 ## License

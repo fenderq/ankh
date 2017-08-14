@@ -262,8 +262,7 @@ cipher(struct ankh *a)
 	if (ferror(a->fin))
 		errx(1, "error reading from input stream");
 
-	explicit_bzero(buf, bufsize);
-	free(buf);
+	freezero(buf, bufsize);
 
 	return 0;
 }

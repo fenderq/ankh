@@ -209,10 +209,10 @@ usage(void)
 	 * -V Version
 	 */
 	fprintf(stderr, "usage:"
-	    "\t%1$s -B [-dk] [-s seckey] -p pubkey\n"
-	    "\t%1$s -G [-km] -s seckey -p pubkey\n"
-	    "\t%1$s -P [-dk] -s seckey -p pubkey\n"
-	    "\t%1$s -S [-dkm]\n"
+	    "\t%1$s -B [-d] [-k keyfile] [-s seckey] -p pubkey\n"
+	    "\t%1$s -G [-k keyfile] [-m mode] -p pubkey -s seckey\n"
+	    "\t%1$s -P [-d] [-k keyfile] -p pubkey -s seckey\n"
+	    "\t%1$s -S [-d] [-k keyfile] [-m mode]\n"
 	    "\t%1$s -V\n",
 	    getprogname());
 

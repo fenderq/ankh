@@ -38,8 +38,8 @@
 #define STRING_MAX 256
 
 #define MAJ 2
-#define MIN 3
-#define REV 1
+#define MIN 4
+#define REV 0
 
 enum command {
 	CMD_UNDEFINED,
@@ -94,18 +94,18 @@ int	 	 header_read(struct ankh *);
 int	 	 header_write(struct ankh *);
 int		 kdf(unsigned char *, char *, unsigned char *,
 		     unsigned long long, size_t, int);
-int	 	 load_pubkey(struct ankh *);
-int	 	 load_seckey(struct ankh *);
 int	 	 nvp_add(char *, char *, struct nvplist *);
 int	 	 nvp_find(const char *, struct nvplist *, struct nvp **);
 void	 	 nvp_free(struct nvplist *);
 int	 	 passwd_read_file(char *, size_t, char *);
 int	 	 passwd_read_tty(char *, size_t, int);
 void	 	 print_value(char *, unsigned char *, int);
+int	 	 pubkey_read(struct ankh *);
+int	 	 pubkey_write(struct ankh *);
 int		 public_key(struct ankh *);
-int	 	 save_pubkey(struct ankh *);
-int	 	 save_seckey(struct ankh *);
 int	 	 sealed_box(struct ankh *);
+int	 	 seckey_read(struct ankh *);
+int	 	 seckey_write(struct ankh *);
 int	 	 secret_key(struct ankh *);
 void	 	 set_mode(struct ankh *);
 char		*str_time(char *, size_t, time_t);
@@ -308,9 +308,9 @@ generate_key_pair(struct ankh *a)
 {
 	crypto_box_keypair(a->pubkey, a->seckey);
 
-	save_seckey(a);
+	seckey_write(a);
 	explicit_bzero(a->seckey, sizeof(a->seckey));
-	save_pubkey(a);
+	pubkey_write(a);
 
 	return 0;
 }
@@ -356,8 +356,8 @@ header_read(struct ankh *a)
 	if (fread(params, HEADER_PARAM_SIZE, 1, a->fin) != 1)
 		errx(1, "failure to read header parameters");
 
-	if ((n = sscanf(params, "%d %d %d %d %ld %llu",
-	    &v[0], &v[1], &v[2], &cmd, &a->memlimit, &a->opslimit)) != 6)
+	if ((n = sscanf(params, "%d %d %d %d %llu %ld",
+	    &v[0], &v[1], &v[2], &cmd, &a->opslimit, &a->memlimit)) != 6)
 		errx(1, "invalid number of parameters %d", n);
 
 	/* XXX strict version check. */
@@ -380,8 +380,8 @@ header_write(struct ankh *a)
 	if (fwrite(magic, MAGIC_LEN, 1, a->fout) != 1)
 		errx(1, "failure to write header magic");
 
-	len = snprintf(params, sizeof(params), "%d %d %d %d %ld %llu",
-	    MAJ, MIN, REV, a->cmd, a->memlimit, a->opslimit);
+	len = snprintf(params, sizeof(params), "%d %d %d %d %llu %ld",
+	    MAJ, MIN, REV, a->cmd, a->opslimit, a->memlimit);
 	if (len > HEADER_PARAM_SIZE)
 		errx(1, "header params exceed size limit %ld", len);
 
@@ -408,156 +408,6 @@ kdf(unsigned char *key, char *keyfile, unsigned char *salt,
 		errx(1, "crypto_pwhash error (check memory limits)");
 
 	explicit_bzero(passwd, sizeof(passwd));
-
-	return 0;
-}
-
-int
-load_pubkey(struct ankh *a)
-{
-	FILE *fp;
-	char *line;
-	const char *name;
-	size_t linesize;
-	ssize_t linelen;
-	struct nvp *np;
-	struct nvplist lines;
-
-	SLIST_INIT(&lines);
-
-	/* Open the file. */
-	if ((fp = fopen(a->pubfile, "r")) == NULL)
-		err(1, "%s", a->pubfile);
-
-	/* Create a tmp line. */
-	linesize = MAX_LINE;
-	if ((line = malloc(linesize)) == NULL)
-		err(1, NULL);
-
-	/* Add each line to a name/value list. */
-	while ((linelen = getline(&line, &linesize, fp)) != -1) {
-		if (line[0] == '#')
-			continue;
-		line[strcspn(line, "\n")] = '\0';
-		nvp_add(line, ": ", &lines);
-	}
-	if (ferror(fp))
-		err(1, "%s", a->pubfile);
-
-	/* Free tmp line and close file. */
-	free(line);
-	fclose(fp);
-
-	/* Get name/value pairs. */
-	name = "key";
-	if (nvp_find(name, &lines, &np) != 0)
-		errx(1, "missing %s in %s", name, a->pubfile);
-	if (sodium_hex2bin(a->pubkey, sizeof(a->pubkey), np->value,
-	    strlen(np->value), NULL, NULL, NULL) != 0)
-		errx(1, "invalid data: %s", np->value);
-
-	/* Free lines. */
-	nvp_free(&lines);
-
-	return 0;
-}
-
-int
-load_seckey(struct ankh *a)
-{
-	FILE *fp;
-	char *line;
-	const char *ep;
-	const char *name;
-	size_t ctlen;
-	size_t linesize;
-	size_t memlimit;
-	ssize_t linelen;
-	struct nvp *np;
-	struct nvplist lines;
-	unsigned char *ct;
-	unsigned char key[crypto_secretbox_KEYBYTES];
-	unsigned char nonce[crypto_secretbox_NONCEBYTES];
-	unsigned char salt[crypto_pwhash_SALTBYTES];
-	unsigned long long opslimit;
-
-	SLIST_INIT(&lines);
-
-	/* Open the file. */
-	if ((fp = fopen(a->secfile, "r")) == NULL)
-		err(1, "%s", a->secfile);
-
-	/* Create a tmp line. */
-	linesize = MAX_LINE;
-	if ((line = malloc(linesize)) == NULL)
-		err(1, NULL);
-
-	/* Add each line to a name/value list. */
-	while ((linelen = getline(&line, &linesize, fp)) != -1) {
-		if (line[0] == '#')
-			continue;
-		line[strcspn(line, "\n")] = '\0';
-		nvp_add(line, ": ", &lines);
-	}
-	if (ferror(fp))
-		err(1, "%s", a->secfile);
-
-	/* Free tmp line and close file. */
-	free(line);
-	fclose(fp);
-
-	/* Get name/value pairs. */
-	name = "opslimit";
-	if (nvp_find(name, &lines, &np) != 0)
-		errx(1, "missing %s in %s", name, a->secfile);
-	opslimit = strtonum(np->value, 1, LONG_MAX, &ep);
-	if (ep != NULL)
-		errx(1, "opslimit %s", ep);
-
-	name = "memlimit";
-	if (nvp_find(name, &lines, &np) != 0)
-		errx(1, "missing %s in %s", name, a->secfile);
-	memlimit = strtonum(np->value, 1, LONG_MAX, &ep);
-	if (ep != NULL)
-		errx(1, "memlimit %s", ep);
-
-	name = "salt";
-	if (nvp_find(name, &lines, &np) != 0)
-		errx(1, "missing %s in %s", name, a->secfile);
-	if (sodium_hex2bin(salt, sizeof(salt), np->value, strlen(np->value),
-	    NULL, NULL, NULL) != 0)
-		errx(1, "invalid data: %s", np->value);
-
-	name = "nonce";
-	if (nvp_find(name, &lines, &np) != 0)
-		errx(1, "missing %s in %s", name, a->secfile);
-	if (sodium_hex2bin(nonce, sizeof(nonce), np->value,
-	    strlen(np->value), NULL, NULL, NULL) != 0)
-		errx(1, "invalid data: %s", np->value);
-
-	name = "encrypted key";
-	if (nvp_find(name, &lines, &np) != 0)
-		errx(1, "missing %s in %s", name, a->secfile);
-	ctlen = strlen(np->value) / 2;
-	if ((ct = malloc(ctlen)) == NULL)
-		err(1, NULL);
-	if (sodium_hex2bin(ct, ctlen, np->value, strlen(np->value),
-	    NULL, NULL, NULL) != 0)
-		errx(1, "invalid data: %s", np->value);
-
-	/* Free lines. */
-	nvp_free(&lines);
-
-	kdf(key, a->keyfile, salt, opslimit, memlimit, 0);
-
-	/* Decrypt the secret key. */
-	if (crypto_secretbox_open_easy(a->seckey, ct, ctlen, nonce, key) != 0)
-		errx(1, "invalid passphrase");
-
-	/* Clear key from memory. */
-	explicit_bzero(key, sizeof(key));
-
-	free(ct);
 
 	return 0;
 }
@@ -700,6 +550,92 @@ print_value(char *name, unsigned char *bin, int size)
 }
 
 int
+pubkey_read(struct ankh *a)
+{
+	FILE *fp;
+	char *line;
+	const char *name;
+	size_t linesize;
+	ssize_t linelen;
+	struct nvp *np;
+	struct nvplist lines;
+
+	SLIST_INIT(&lines);
+
+	/* Open the file. */
+	if ((fp = fopen(a->pubfile, "r")) == NULL)
+		err(1, "%s", a->pubfile);
+
+	/* Create a tmp line. */
+	linesize = MAX_LINE;
+	if ((line = malloc(linesize)) == NULL)
+		err(1, NULL);
+
+	/* Add each line to a name/value list. */
+	while ((linelen = getline(&line, &linesize, fp)) != -1) {
+		if (line[0] == '#')
+			continue;
+		line[strcspn(line, "\n")] = '\0';
+		nvp_add(line, ": ", &lines);
+	}
+	if (ferror(fp))
+		err(1, "%s", a->pubfile);
+
+	/* Free tmp line and close file. */
+	free(line);
+	fclose(fp);
+
+	/* Get name/value pairs. */
+	name = "key";
+	if (nvp_find(name, &lines, &np) != 0)
+		errx(1, "missing %s in %s", name, a->pubfile);
+	if (sodium_hex2bin(a->pubkey, sizeof(a->pubkey), np->value,
+	    strlen(np->value), NULL, NULL, NULL) != 0)
+		errx(1, "invalid data: %s", np->value);
+
+	/* Free lines. */
+	nvp_free(&lines);
+
+	return 0;
+}
+
+int
+pubkey_write(struct ankh *a)
+{
+	FILE *fp;
+	char *hex;
+	char id[STRING_MAX];
+	char now[STRING_MAX];
+	size_t hexsize;
+	time_t t;
+
+	memset(id, 0, sizeof(id));
+
+	hexsize = sizeof(a->pubkey) * 2 + 1;
+	if ((hex = malloc(hexsize)) == NULL)
+		err(1, NULL);
+
+	sodium_bin2hex(hex, hexsize, a->pubkey, sizeof(a->pubkey));
+
+	if ((fp = fopen(a->pubfile, "w")) == NULL)
+		err(1, "%s", a->pubfile);
+
+	time(&t);
+	str_time(now, sizeof(now), t);
+	getid(id, sizeof(id));
+
+	fprintf(fp, "# %s v%s public key\n# %s\n# %s\n",
+	    getprogname(), version(), now, id);
+
+	fprintf(fp, "key: %s\n", hex);
+
+	fclose(fp);
+	free(hex);
+
+	return 0;
+}
+
+int
 public_key(struct ankh *a)
 {
 	size_t ctlen;
@@ -711,8 +647,8 @@ public_key(struct ankh *a)
 		err(1, NULL);
 	memset(ct, 0, ctlen);
 
-	load_pubkey(a);
-	load_seckey(a);
+	pubkey_read(a);
+	seckey_read(a);
 
 	if (a->enc) {
 		header_write(a);
@@ -750,43 +686,149 @@ public_key(struct ankh *a)
 }
 
 int
-save_pubkey(struct ankh *a)
+sealed_box(struct ankh *a)
 {
-	FILE *fp;
-	char *hex;
-	char id[STRING_MAX];
-	char now[STRING_MAX];
-	size_t hexsize;
-	time_t t;
+	size_t ctlen;
+	unsigned char *ct;
 
-	memset(id, 0, sizeof(id));
-
-	hexsize = sizeof(a->pubkey) * 2 + 1;
-	if ((hex = malloc(hexsize)) == NULL)
+	ctlen = sizeof(a->key) + crypto_box_SEALBYTES;
+	if ((ct = malloc(ctlen)) == NULL)
 		err(1, NULL);
+	memset(ct, 0, ctlen);
 
-	sodium_bin2hex(hex, hexsize, a->pubkey, sizeof(a->pubkey));
+	pubkey_read(a);
 
-	if ((fp = fopen(a->pubfile, "w")) == NULL)
-		err(1, "%s", a->pubfile);
+	if (a->enc) {
+		header_write(a);
+		arc4random_buf(a->key, sizeof(a->key));
+		/* Encrypt cipher key. */
+		crypto_box_seal(ct, a->key, sizeof(a->key), a->pubkey);
+		if (fwrite(ct, ctlen, 1, a->fout) != 1)
+			err(1, "failure to write sealed box");
+	} else {
+		header_read(a);
+		if (fread(ct, ctlen, 1, a->fin) != 1)
+			err(1, "failure to read sealed box");
+		seckey_read(a);
+		/* Decrypt cipher key. */
+		if (crypto_box_seal_open(a->key, ct, ctlen,
+		    a->pubkey, a->seckey) != 0)
+			errx(1, "crypto_box_seal_open error");
+		explicit_bzero(a->seckey, sizeof(a->seckey));
+	}
 
-	time(&t);
-	str_time(now, sizeof(now), t);
-	getid(id, sizeof(id));
+	free(ct);
 
-	fprintf(fp, "# %s v%s public key\n# %s\n# %s\n",
-	    getprogname(), version(), now, id);
+	if (pledge("stdio", NULL) == -1)
+		err(1, "pledge");
 
-	fprintf(fp, "key: %s\n", hex);
-
-	fclose(fp);
-	free(hex);
+	cipher(a);
 
 	return 0;
 }
 
 int
-save_seckey(struct ankh *a)
+seckey_read(struct ankh *a)
+{
+	FILE *fp;
+	char *line;
+	const char *ep;
+	const char *name;
+	size_t ctlen;
+	size_t linesize;
+	size_t memlimit;
+	ssize_t linelen;
+	struct nvp *np;
+	struct nvplist lines;
+	unsigned char *ct;
+	unsigned char key[crypto_secretbox_KEYBYTES];
+	unsigned char nonce[crypto_secretbox_NONCEBYTES];
+	unsigned char salt[crypto_pwhash_SALTBYTES];
+	unsigned long long opslimit;
+
+	SLIST_INIT(&lines);
+
+	/* Open the file. */
+	if ((fp = fopen(a->secfile, "r")) == NULL)
+		err(1, "%s", a->secfile);
+
+	/* Create a tmp line. */
+	linesize = MAX_LINE;
+	if ((line = malloc(linesize)) == NULL)
+		err(1, NULL);
+
+	/* Add each line to a name/value list. */
+	while ((linelen = getline(&line, &linesize, fp)) != -1) {
+		if (line[0] == '#')
+			continue;
+		line[strcspn(line, "\n")] = '\0';
+		nvp_add(line, ": ", &lines);
+	}
+	if (ferror(fp))
+		err(1, "%s", a->secfile);
+
+	/* Free tmp line and close file. */
+	free(line);
+	fclose(fp);
+
+	/* Get name/value pairs. */
+	name = "opslimit";
+	if (nvp_find(name, &lines, &np) != 0)
+		errx(1, "missing %s in %s", name, a->secfile);
+	opslimit = strtonum(np->value, 1, LONG_MAX, &ep);
+	if (ep != NULL)
+		errx(1, "opslimit %s", ep);
+
+	name = "memlimit";
+	if (nvp_find(name, &lines, &np) != 0)
+		errx(1, "missing %s in %s", name, a->secfile);
+	memlimit = strtonum(np->value, 1, LONG_MAX, &ep);
+	if (ep != NULL)
+		errx(1, "memlimit %s", ep);
+
+	name = "salt";
+	if (nvp_find(name, &lines, &np) != 0)
+		errx(1, "missing %s in %s", name, a->secfile);
+	if (sodium_hex2bin(salt, sizeof(salt), np->value, strlen(np->value),
+	    NULL, NULL, NULL) != 0)
+		errx(1, "invalid data: %s", np->value);
+
+	name = "nonce";
+	if (nvp_find(name, &lines, &np) != 0)
+		errx(1, "missing %s in %s", name, a->secfile);
+	if (sodium_hex2bin(nonce, sizeof(nonce), np->value,
+	    strlen(np->value), NULL, NULL, NULL) != 0)
+		errx(1, "invalid data: %s", np->value);
+
+	name = "encrypted key";
+	if (nvp_find(name, &lines, &np) != 0)
+		errx(1, "missing %s in %s", name, a->secfile);
+	ctlen = strlen(np->value) / 2;
+	if ((ct = malloc(ctlen)) == NULL)
+		err(1, NULL);
+	if (sodium_hex2bin(ct, ctlen, np->value, strlen(np->value),
+	    NULL, NULL, NULL) != 0)
+		errx(1, "invalid data: %s", np->value);
+
+	/* Free lines. */
+	nvp_free(&lines);
+
+	kdf(key, a->keyfile, salt, opslimit, memlimit, 0);
+
+	/* Decrypt the secret key. */
+	if (crypto_secretbox_open_easy(a->seckey, ct, ctlen, nonce, key) != 0)
+		errx(1, "invalid passphrase");
+
+	/* Clear key from memory. */
+	explicit_bzero(key, sizeof(key));
+
+	free(ct);
+
+	return 0;
+}
+
+int
+seckey_write(struct ankh *a)
 {
 	FILE *fp;
 	char *hex;
@@ -861,48 +903,6 @@ save_seckey(struct ankh *a)
 	fclose(fp);
 
 	umask(mask);
-
-	return 0;
-}
-
-int
-sealed_box(struct ankh *a)
-{
-	size_t ctlen;
-	unsigned char *ct;
-
-	ctlen = sizeof(a->key) + crypto_box_SEALBYTES;
-	if ((ct = malloc(ctlen)) == NULL)
-		err(1, NULL);
-	memset(ct, 0, ctlen);
-
-	load_pubkey(a);
-
-	if (a->enc) {
-		header_write(a);
-		arc4random_buf(a->key, sizeof(a->key));
-		/* Encrypt cipher key. */
-		crypto_box_seal(ct, a->key, sizeof(a->key), a->pubkey);
-		if (fwrite(ct, ctlen, 1, a->fout) != 1)
-			err(1, "failure to write sealed box");
-	} else {
-		header_read(a);
-		if (fread(ct, ctlen, 1, a->fin) != 1)
-			err(1, "failure to read sealed box");
-		load_seckey(a);
-		/* Decrypt cipher key. */
-		if (crypto_box_seal_open(a->key, ct, ctlen,
-		    a->pubkey, a->seckey) != 0)
-			errx(1, "crypto_box_seal_open error");
-		explicit_bzero(a->seckey, sizeof(a->seckey));
-	}
-
-	free(ct);
-
-	if (pledge("stdio", NULL) == -1)
-		err(1, "pledge");
-
-	cipher(a);
 
 	return 0;
 }

@@ -39,7 +39,7 @@
 
 #define MAJ 2
 #define MIN 4
-#define REV 0
+#define REV 1
 
 enum command {
 	CMD_UNDEFINED,
@@ -364,7 +364,9 @@ header_read(struct ankh *a)
 	if (v[0] != MAJ || v[1] != MIN || v[2] != REV)
 		warnx("data is from v%d.%d.%d", v[0], v[1], v[2]);
 
-	a->cmd = cmd;
+	/* Make sure the file type matches the command we are running. */
+	if (a->cmd != cmd)
+		errx(1, "invalid command for file type %d", cmd);
 
 	return 0;
 }

@@ -28,7 +28,7 @@
 
 #include <sodium.h>
 
-#define BUFSIZE 1024 * 1024
+#define BUFSIZE (1024 * 1024)
 #define DEFAULT_MODE 2
 #define HEADER_PARAM_SIZE 64
 #define MAGIC_LEN 16
@@ -38,8 +38,8 @@
 #define STRING_MAX 256
 
 #define MAJ 2
-#define MIN 4
-#define REV 1
+#define MIN 5
+#define REV 0
 
 enum command {
 	CMD_UNDEFINED,
@@ -111,10 +111,6 @@ void	 	 set_mode(struct ankh *);
 char		*str_time(char *, size_t, time_t);
 const char	*version(void);
 
-/*
- * ankh libsodium utility.
- * Designed and tested on OpenBSD 6.1-current amd64.
- */
 int
 main(int argc, char *argv[])
 {

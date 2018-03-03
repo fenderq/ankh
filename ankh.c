@@ -214,8 +214,8 @@ usage(void)
 	fprintf(stderr, "usage:"
 	    "\t%1$s -B [-d] [-f kdf] [-k keyfile] [-s seckey] -p pubkey\n"
 	    "\t%1$s -G [-f kdf] [-k keyfile] [-m mode] -p pubkey -s seckey\n"
-	    "\t%1$s -P [-f kdf] [-d] [-k keyfile] -p pubkey -s seckey\n"
-	    "\t%1$s -S [-f kdf] [-d] [-k keyfile] [-m mode]\n"
+	    "\t%1$s -P [-d] [-f kdf] [-k keyfile] -p pubkey -s seckey\n"
+	    "\t%1$s -S [-d] [-f kdf] [-k keyfile] [-m mode]\n"
 	    "\t%1$s -V\n",
 	    getprogname());
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017 Steven Roberts <sroberts@fenderq.com>
+ * Copyright (c) 2017, 2018 Steven Roberts <sroberts@fenderq.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -53,11 +53,13 @@ enum command {
 struct ankh {
 	FILE *fin;
 	FILE *fout;
+	char kdfname[STRING_MAX];
 	char keyfile[PATH_MAX];
 	char pubfile[PATH_MAX];
 	char secfile[PATH_MAX];
 	enum command cmd;
 	int enc;
+	int kdfid;
 	int mode;
 	size_t memlimit;
 	unsigned char key[crypto_secretbox_KEYBYTES];
@@ -92,7 +94,7 @@ int	 	 generate_key_pair(struct ankh *);
 char		*getid(char *, size_t);
 int	 	 header_read(struct ankh *);
 int	 	 header_write(struct ankh *);
-int		 kdf(unsigned char *, char *, unsigned char *,
+int		 kdf(unsigned char *, char *, unsigned char *, int,
 		     unsigned long long, size_t, int);
 int	 	 nvp_add(char *, char *, struct nvplist *);
 int	 	 nvp_find(const char *, struct nvplist *, struct nvp **);
@@ -107,6 +109,7 @@ int	 	 sealed_box(struct ankh *);
 int	 	 seckey_read(struct ankh *);
 int	 	 seckey_write(struct ankh *);
 int	 	 secret_key(struct ankh *);
+void	 	 set_kdf(struct ankh *);
 void	 	 set_mode(struct ankh *);
 char		*str_time(char *, size_t, time_t);
 const char	*version(void);
@@ -129,12 +132,13 @@ main(int argc, char *argv[])
 	adp->enc = 1;
 	adp->fin = stdin;
 	adp->fout = stdout;
+	adp->kdfid = crypto_pwhash_ALG_DEFAULT;
 	adp->mode = DEFAULT_MODE;
 
 	if (sodium_init() == -1)
 		errx(1, "libsodium init error");
 
-	while ((ch = getopt(argc, argv, "BGHKPSVdk:m:p:s:v")) != -1) {
+	while ((ch = getopt(argc, argv, "BGHKPSVdf:k:m:p:s:v")) != -1) {
 		switch (ch) {
 		case 'B':
 			if (adp->cmd != CMD_UNDEFINED)
@@ -163,6 +167,9 @@ main(int argc, char *argv[])
 			break;
 		case 'd':
 			adp->enc = 0;
+			break;
+		case 'f':
+			strlcpy(adp->kdfname, optarg, sizeof(adp->kdfname));
 			break;
 		case 'k':
 			strlcpy(adp->keyfile, optarg, sizeof(adp->keyfile));
@@ -205,10 +212,10 @@ usage(void)
 	 * -V Version
 	 */
 	fprintf(stderr, "usage:"
-	    "\t%1$s -B [-d] [-k keyfile] [-s seckey] -p pubkey\n"
-	    "\t%1$s -G [-k keyfile] [-m mode] -p pubkey -s seckey\n"
-	    "\t%1$s -P [-d] [-k keyfile] -p pubkey -s seckey\n"
-	    "\t%1$s -S [-d] [-k keyfile] [-m mode]\n"
+	    "\t%1$s -B [-d] [-f kdf] [-k keyfile] [-s seckey] -p pubkey\n"
+	    "\t%1$s -G [-f kdf] [-k keyfile] [-m mode] -p pubkey -s seckey\n"
+	    "\t%1$s -P [-f kdf] [-d] [-k keyfile] -p pubkey -s seckey\n"
+	    "\t%1$s -S [-f kdf] [-d] [-k keyfile] [-m mode]\n"
 	    "\t%1$s -V\n",
 	    getprogname());
 
@@ -277,16 +284,20 @@ do_command(struct ankh *a)
 		usage();
 		break;
 	case CMD_GENERATE_KEY_PAIR:
+		set_kdf(a);
 		set_mode(a);
 		generate_key_pair(a);
 		break;
 	case CMD_PUBLIC_KEY:
+		set_kdf(a);
 		public_key(a);
 		break;
 	case CMD_SEALED_BOX:
+		set_kdf(a);
 		sealed_box(a);
 		break;
 	case CMD_SECRET_KEY:
+		set_kdf(a);
 		set_mode(a);
 		secret_key(a);
 		break;
@@ -390,7 +401,7 @@ header_write(struct ankh *a)
 }
 
 int
-kdf(unsigned char *key, char *keyfile, unsigned char *salt,
+kdf(unsigned char *key, char *keyfile, unsigned char *salt, int algo,
     unsigned long long opslimit, size_t memlimit, int confirm)
 {
 	char passwd[PASSWD_MAX];
@@ -401,8 +412,7 @@ kdf(unsigned char *key, char *keyfile, unsigned char *salt,
 		passwd_read_tty(passwd, sizeof(passwd), confirm);
 
 	if (crypto_pwhash(key, crypto_secretbox_KEYBYTES, passwd,
-	    strlen(passwd), salt, opslimit, memlimit,
-	    crypto_pwhash_ALG_DEFAULT) != 0)
+	    strlen(passwd), salt, opslimit, memlimit, algo) != 0)
 		errx(1, "crypto_pwhash error (check memory limits)");
 
 	explicit_bzero(passwd, sizeof(passwd));
@@ -811,7 +821,7 @@ seckey_read(struct ankh *a)
 	/* Free lines. */
 	nvp_free(&lines);
 
-	kdf(key, a->keyfile, salt, opslimit, memlimit, 0);
+	kdf(key, a->keyfile, salt, a->kdfid, opslimit, memlimit, 0);
 
 	/* Decrypt the secret key. */
 	if (crypto_secretbox_open_easy(a->seckey, ct, ctlen, nonce, key) != 0)
@@ -856,7 +866,7 @@ seckey_write(struct ankh *a)
 	arc4random_buf(nonce, sizeof(nonce));
 	arc4random_buf(salt, sizeof(salt));
 
-	kdf(key, a->keyfile, salt, a->opslimit, a->memlimit, 1);
+	kdf(key, a->keyfile, salt, a->kdfid, a->opslimit, a->memlimit, 1);
 
 	/* Encrypt secret key. */
 	crypto_secretbox_easy(ct, a->seckey, sizeof(a->seckey),
@@ -921,7 +931,8 @@ secret_key(struct ankh *a)
 			errx(1, "failure to read salt");
 	}
 
-	kdf(a->key, a->keyfile, salt, a->opslimit, a->memlimit, a->enc);
+	kdf(a->key, a->keyfile, salt, a->kdfid, a->opslimit, a->memlimit,
+	    a->enc);
 
 	if (pledge("stdio", NULL) == -1)
 		err(1, "pledge");
@@ -929,6 +940,19 @@ secret_key(struct ankh *a)
 	cipher(a);
 
 	return 0;
+}
+
+void
+set_kdf(struct ankh *a)
+{
+	if (a->kdfname[0] == '\0')
+		a->kdfid = crypto_pwhash_ALG_DEFAULT;
+	else if (strcmp(a->kdfname, "argon2i") == 0)
+		a->kdfid = crypto_pwhash_ALG_ARGON2I13;
+	else if (strcmp(a->kdfname, "argon2id") == 0)
+		a->kdfid = crypto_pwhash_ALG_ARGON2ID13;
+	else
+		errx(1, "undefined kdf %s", a->kdfname);
 }
 
 /*

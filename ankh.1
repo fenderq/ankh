@@ -1,5 +1,5 @@
 .\"
-.\" Copyright (c) 2017 Steven Roberts <sroberts@fenderq.com>
+.\" Copyright (c) 2017, 2018 Steven Roberts <sroberts@fenderq.com>
 .\"
 .\" Permission to use, copy, modify, and distribute this software for any
 .\" purpose with or without fee is hereby granted, provided that the above
@@ -13,7 +13,7 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: August 31 2017 $
+.Dd $Mdocdate: March 3 2018 $
 .Dt ANKH 1
 .Os
 .Sh NAME
@@ -23,11 +23,13 @@
 .Nm ankh
 .Fl B
 .Op Fl d
+.Op Fl f Ar kdf
 .Op Fl k Ar keyfile
 .Op Fl s Ar seckey
 .Fl p Ar pubkey
 .Nm ankh
 .Fl G
+.Op Fl f Ar kdf
 .Op Fl k Ar keyfile
 .Op Fl m Ar mode
 .Fl p Ar pubkey
@@ -35,12 +37,14 @@
 .Nm ankh
 .Fl P
 .Op Fl d
+.Op Fl f Ar kdf
 .Op Fl k Ar keyfile
 .Fl p Ar pubkey
 .Fl s Ar seckey
 .Nm ankh
 .Fl S
 .Op Fl d
+.Op Fl f Ar kdf
 .Op Fl k Ar keyfile
 .Op Fl m Ar mode
 .Nm ankh
@@ -78,6 +82,12 @@ The other options are as follows:
 .Bl -tag -width Dsskeyfile
 .It Fl d
 Decrypt the stream.
+.It Fl f Ar kdf
+Set the
+.Ar kdf
+name for key derivation.
+This can either be argon2i or argon2id, otherwise the libsodium default
+value will be used.
 .It Fl k Ar keyfile
 Read passphrase from
 .Ar keyfile .
@@ -125,3 +135,13 @@ Decrypt a file from Alice to Bob using public key:
 .Dl $ ankh -P -p alice.pub -s bob.sec < ciphertext.file > plaintext.file.2
 .Sh AUTHORS
 .An Steven Roberts <sroberts@fenderq.com>
+.Sh CAVEATS
+libsodium changed the default key derivation function from argon2i to argon2id
+in 1.0.15.
+Files created with older libsodium versions will require use of the
+.Ar kdf
+argument to successfully decrypt.
+This includes using keys.
+.Pp
+Decrypt a legacy libsodium file using a passphrase:
+.Dl $ ankh -S -d -f argon2i < ciphertext.file > plaintext.file

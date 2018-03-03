@@ -138,10 +138,6 @@ Decrypt a file from Alice to Bob using public key:
 .Sh CAVEATS
 libsodium changed the default key derivation function from argon2i to argon2id
 in 1.0.15.
-Files created with older libsodium versions will require use of the
+Use the
 .Ar kdf
-argument to successfully decrypt.
-This includes using keys.
-.Pp
-Decrypt a legacy libsodium file using a passphrase:
-.Dl $ ankh -S -d -f argon2i < ciphertext.file > plaintext.file
+argument to select the older key derivation function.

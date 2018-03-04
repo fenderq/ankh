@@ -22,29 +22,29 @@
 .Sh SYNOPSIS
 .Nm ankh
 .Fl B
+.Op Fl a Ar algo
 .Op Fl d
-.Op Fl f Ar kdf
 .Op Fl k Ar keyfile
 .Op Fl s Ar seckey
 .Fl p Ar pubkey
 .Nm ankh
 .Fl G
-.Op Fl f Ar kdf
+.Op Fl a Ar algo
 .Op Fl k Ar keyfile
 .Op Fl m Ar mode
 .Fl p Ar pubkey
 .Fl s Ar seckey
 .Nm ankh
 .Fl P
+.Op Fl a Ar algo
 .Op Fl d
-.Op Fl f Ar kdf
 .Op Fl k Ar keyfile
 .Fl p Ar pubkey
 .Fl s Ar seckey
 .Nm ankh
 .Fl S
+.Op Fl a Ar algo
 .Op Fl d
-.Op Fl f Ar kdf
 .Op Fl k Ar keyfile
 .Op Fl m Ar mode
 .Nm ankh
@@ -80,14 +80,14 @@ Print out version information.
 .Pp
 The other options are as follows:
 .Bl -tag -width Dsskeyfile
-.It Fl d
-Decrypt the stream.
-.It Fl f Ar kdf
+.It Fl a Ar algo
 Set the
-.Ar kdf
-name for key derivation.
+.Ar algo
+for key derivation.
 This can either be argon2i or argon2id, otherwise the libsodium default
 value will be used.
+.It Fl d
+Decrypt the stream.
 .It Fl k Ar keyfile
 Read passphrase from
 .Ar keyfile .
@@ -139,5 +139,5 @@ Decrypt a file from Alice to Bob using public key:
 libsodium changed the default key derivation function from argon2i to argon2id
 in 1.0.15.
 Use the
-.Ar kdf
+.Ar algo
 argument to select the older key derivation function.

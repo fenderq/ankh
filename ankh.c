@@ -53,13 +53,13 @@ enum command {
 struct ankh {
 	FILE *fin;
 	FILE *fout;
-	char kdfname[STRING_MAX];
+	char algoname[STRING_MAX];
 	char keyfile[PATH_MAX];
 	char pubfile[PATH_MAX];
 	char secfile[PATH_MAX];
 	enum command cmd;
+	int algo;
 	int enc;
-	int kdfid;
 	int mode;
 	size_t memlimit;
 	unsigned char key[crypto_secretbox_KEYBYTES];
@@ -109,7 +109,7 @@ int	 	 sealed_box(struct ankh *);
 int	 	 seckey_read(struct ankh *);
 int	 	 seckey_write(struct ankh *);
 int	 	 secret_key(struct ankh *);
-void	 	 set_kdf(struct ankh *);
+void	 	 set_algo(struct ankh *);
 void	 	 set_mode(struct ankh *);
 char		*str_time(char *, size_t, time_t);
 const char	*version(void);
@@ -132,13 +132,13 @@ main(int argc, char *argv[])
 	adp->enc = 1;
 	adp->fin = stdin;
 	adp->fout = stdout;
-	adp->kdfid = crypto_pwhash_ALG_DEFAULT;
+	adp->algo = crypto_pwhash_ALG_DEFAULT;
 	adp->mode = DEFAULT_MODE;
 
 	if (sodium_init() == -1)
 		errx(1, "libsodium init error");
 
-	while ((ch = getopt(argc, argv, "BGHKPSVdf:k:m:p:s:v")) != -1) {
+	while ((ch = getopt(argc, argv, "BGHKPSVa:dk:m:p:s:v")) != -1) {
 		switch (ch) {
 		case 'B':
 			if (adp->cmd != CMD_UNDEFINED)
@@ -169,7 +169,7 @@ main(int argc, char *argv[])
 			adp->enc = 0;
 			break;
 		case 'f':
-			strlcpy(adp->kdfname, optarg, sizeof(adp->kdfname));
+			strlcpy(adp->algoname, optarg, sizeof(adp->algoname));
 			break;
 		case 'k':
 			strlcpy(adp->keyfile, optarg, sizeof(adp->keyfile));
@@ -212,10 +212,10 @@ usage(void)
 	 * -V Version
 	 */
 	fprintf(stderr, "usage:"
-	    "\t%1$s -B [-d] [-f kdf] [-k keyfile] [-s seckey] -p pubkey\n"
-	    "\t%1$s -G [-f kdf] [-k keyfile] [-m mode] -p pubkey -s seckey\n"
-	    "\t%1$s -P [-d] [-f kdf] [-k keyfile] -p pubkey -s seckey\n"
-	    "\t%1$s -S [-d] [-f kdf] [-k keyfile] [-m mode]\n"
+	    "\t%1$s -B [-a algo] [-d] [-k keyfile] [-s seckey] -p pubkey\n"
+	    "\t%1$s -G [-a algo] [-k keyfile] [-m mode] -p pubkey -s seckey\n"
+	    "\t%1$s -P [-a algo] [-d] [-k keyfile] -p pubkey -s seckey\n"
+	    "\t%1$s -S [-a algo] [-d] [-k keyfile] [-m mode]\n"
 	    "\t%1$s -V\n",
 	    getprogname());
 
@@ -284,20 +284,20 @@ do_command(struct ankh *a)
 		usage();
 		break;
 	case CMD_GENERATE_KEY_PAIR:
-		set_kdf(a);
+		set_algo(a);
 		set_mode(a);
 		generate_key_pair(a);
 		break;
 	case CMD_PUBLIC_KEY:
-		set_kdf(a);
+		set_algo(a);
 		public_key(a);
 		break;
 	case CMD_SEALED_BOX:
-		set_kdf(a);
+		set_algo(a);
 		sealed_box(a);
 		break;
 	case CMD_SECRET_KEY:
-		set_kdf(a);
+		set_algo(a);
 		set_mode(a);
 		secret_key(a);
 		break;
@@ -821,7 +821,7 @@ seckey_read(struct ankh *a)
 	/* Free lines. */
 	nvp_free(&lines);
 
-	kdf(key, a->keyfile, salt, a->kdfid, opslimit, memlimit, 0);
+	kdf(key, a->keyfile, salt, a->algo, opslimit, memlimit, 0);
 
 	/* Decrypt the secret key. */
 	if (crypto_secretbox_open_easy(a->seckey, ct, ctlen, nonce, key) != 0)
@@ -866,7 +866,7 @@ seckey_write(struct ankh *a)
 	arc4random_buf(nonce, sizeof(nonce));
 	arc4random_buf(salt, sizeof(salt));
 
-	kdf(key, a->keyfile, salt, a->kdfid, a->opslimit, a->memlimit, 1);
+	kdf(key, a->keyfile, salt, a->algo, a->opslimit, a->memlimit, 1);
 
 	/* Encrypt secret key. */
 	crypto_secretbox_easy(ct, a->seckey, sizeof(a->seckey),
@@ -931,7 +931,7 @@ secret_key(struct ankh *a)
 			errx(1, "failure to read salt");
 	}
 
-	kdf(a->key, a->keyfile, salt, a->kdfid, a->opslimit, a->memlimit,
+	kdf(a->key, a->keyfile, salt, a->algo, a->opslimit, a->memlimit,
 	    a->enc);
 
 	if (pledge("stdio", NULL) == -1)
@@ -943,16 +943,16 @@ secret_key(struct ankh *a)
 }
 
 void
-set_kdf(struct ankh *a)
+set_algo(struct ankh *a)
 {
-	if (a->kdfname[0] == '\0')
-		a->kdfid = crypto_pwhash_ALG_DEFAULT;
-	else if (strcmp(a->kdfname, "argon2i") == 0)
-		a->kdfid = crypto_pwhash_ALG_ARGON2I13;
-	else if (strcmp(a->kdfname, "argon2id") == 0)
-		a->kdfid = crypto_pwhash_ALG_ARGON2ID13;
+	if (a->algoname[0] == '\0')
+		a->algo = crypto_pwhash_ALG_DEFAULT;
+	else if (strcmp(a->algoname, "argon2i") == 0)
+		a->algo = crypto_pwhash_ALG_ARGON2I13;
+	else if (strcmp(a->algoname, "argon2id") == 0)
+		a->algo = crypto_pwhash_ALG_ARGON2ID13;
 	else
-		errx(1, "undefined kdf %s", a->kdfname);
+		errx(1, "undefined algo %s", a->algoname);
 }
 
 /*

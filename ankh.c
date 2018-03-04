@@ -165,11 +165,11 @@ main(int argc, char *argv[])
 				usage();
 			adp->cmd = CMD_VERSION;
 			break;
+		case 'a':
+			strlcpy(adp->algoname, optarg, sizeof(adp->algoname));
+			break;
 		case 'd':
 			adp->enc = 0;
-			break;
-		case 'f':
-			strlcpy(adp->algoname, optarg, sizeof(adp->algoname));
 			break;
 		case 'k':
 			strlcpy(adp->keyfile, optarg, sizeof(adp->keyfile));

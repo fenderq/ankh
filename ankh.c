@@ -37,9 +37,9 @@
 #define PASSWD_MIN 8
 #define STRING_MAX 256
 
-#define MAJ 2
-#define MIN 5
-#define REV 1
+#define MAJ 3
+#define MIN 0
+#define REV 0
 
 enum command {
 	CMD_UNDEFINED,
@@ -62,10 +62,18 @@ struct ankh {
 	int enc;
 	int mode;
 	size_t memlimit;
-	unsigned char key[crypto_secretbox_KEYBYTES];
+	unsigned char key[crypto_secretstream_xchacha20poly1305_KEYBYTES];
 	unsigned char pubkey[crypto_box_PUBLICKEYBYTES];
 	unsigned char seckey[crypto_box_SECRETKEYBYTES];
 	unsigned long long opslimit;
+};
+
+struct kdfinfo {
+	const char *name;
+	int algo;
+} kdflist[] = {
+	{ "argon2i", crypto_pwhash_ALG_ARGON2I13 },
+	{ "argon2id", crypto_pwhash_ALG_ARGON2ID13 }
 };
 
 SLIST_HEAD(nvplist, nvp);
@@ -81,14 +89,14 @@ int verbose;
 struct ankh *adp;
 
 unsigned char magic[] = {
-	0x7e, 0x82, 0x72, 0x2d, 0xfc, 0xac, 0xf3, 0x05,
-	0x99, 0x7f, 0xee, 0x77, 0x34, 0x15, 0x7f, 0x5a
+	0xa4, 0xfb, 0x24, 0x78, 0xc1, 0x08, 0x26, 0x10,
+	0x7e, 0x5c, 0xa3, 0x39, 0x9f, 0x36, 0x36, 0x99
 };
 
 __dead void usage(void);
 
-int	 	 cipher(struct ankh *);
 void		 cleanup(void);
+int		 data_write(FILE *, char *, void *, size_t);
 int	 	 do_command(struct ankh *);
 int	 	 generate_key_pair(struct ankh *);
 char		*getid(char *, size_t);
@@ -110,8 +118,11 @@ int	 	 seckey_read(struct ankh *);
 int	 	 seckey_write(struct ankh *);
 int	 	 secret_key(struct ankh *);
 void	 	 set_algo(struct ankh *);
+void	 	 set_algoname(struct ankh *);
 void	 	 set_mode(struct ankh *);
 char		*str_time(char *, size_t, time_t);
+int	 	 stream_decrypt(struct ankh *);
+int	 	 stream_encrypt(struct ankh *);
 const char	*version(void);
 
 int
@@ -134,6 +145,8 @@ main(int argc, char *argv[])
 	adp->fout = stdout;
 	adp->algo = crypto_pwhash_ALG_DEFAULT;
 	adp->mode = DEFAULT_MODE;
+
+	set_algoname(adp);
 
 	if (sodium_init() == -1)
 		errx(1, "libsodium init error");
@@ -167,6 +180,7 @@ main(int argc, char *argv[])
 			break;
 		case 'a':
 			strlcpy(adp->algoname, optarg, sizeof(adp->algoname));
+			set_algo(adp);
 			break;
 		case 'd':
 			adp->enc = 0;
@@ -222,58 +236,26 @@ usage(void)
 	exit(EXIT_FAILURE);
 }
 
-int
-cipher(struct ankh *a)
-{
-	size_t bufsize;
-	size_t bytes;
-	size_t rlen;
-	size_t wlen;
-	unsigned char *buf;
-	unsigned char n[crypto_secretbox_NONCEBYTES];
-
-	bufsize = BUFSIZE;
-	if ((buf = malloc(bufsize)) == NULL)
-		err(1, NULL);
-
-	/*
-	 * Determine how much we want to read based on operation.
-	 * We need to reserve space for the MAC.
-	 */
-	rlen = a->enc ? bufsize - crypto_secretbox_MACBYTES : bufsize;
-
-	memset(n, 0, sizeof(n));
-	while ((bytes = fread(buf, 1, rlen, a->fin)) != 0) {
-		sodium_increment(n, sizeof(n));
-		/*
-		 * Memory may overlap for both encrypt and decrypt.
-		 * Ciphertext writes extra bytes for the MAC.
-		 * Plaintext only writes the original data.
-		 */
-		if (a->enc) {
-			crypto_secretbox_easy(buf, buf, bytes, n, a->key);
-			wlen = bytes + crypto_secretbox_MACBYTES;
-		} else {
-			if (crypto_secretbox_open_easy(
-			    buf, buf, bytes, n, a->key) != 0)
-				errx(1, "invalid message data or key");
-			wlen = bytes - crypto_secretbox_MACBYTES;
-		}
-		if (fwrite(buf, wlen, 1, a->fout) == 0)
-			errx(1, "error writing to output stream");
-	}
-	if (ferror(a->fin))
-		errx(1, "error reading from input stream");
-
-	freezero(buf, bufsize);
-
-	return 0;
-}
-
 void
 cleanup(void)
 {
 	freezero(adp, sizeof(struct ankh));
+}
+
+int
+data_write(FILE *fp, char *name, void *data, size_t size)
+{
+	char *hex;
+	size_t hexsize;
+
+	hexsize = size * 2 + 1;
+	if ((hex = malloc(hexsize)) == NULL)
+		err(1, NULL);
+	sodium_bin2hex(hex, hexsize, data, size);
+	fprintf(fp, "%s: %s\n", name, hex);
+	free(hex);
+
+	return 0;
 }
 
 int
@@ -284,20 +266,16 @@ do_command(struct ankh *a)
 		usage();
 		break;
 	case CMD_GENERATE_KEY_PAIR:
-		set_algo(a);
 		set_mode(a);
 		generate_key_pair(a);
 		break;
 	case CMD_PUBLIC_KEY:
-		set_algo(a);
 		public_key(a);
 		break;
 	case CMD_SEALED_BOX:
-		set_algo(a);
 		sealed_box(a);
 		break;
 	case CMD_SECRET_KEY:
-		set_algo(a);
 		set_mode(a);
 		secret_key(a);
 		break;
@@ -344,12 +322,17 @@ getid(char *str, size_t size)
 int
 header_read(struct ankh *a)
 {
+	char sver[STRING_MAX];
+	char ver[STRING_MAX];
+	const char *cur_ver;
+	const char *lib_ver;
 	int cmd;
 	int n;
-	int v[3];
 	unsigned char params[HEADER_PARAM_SIZE + 1];
 	unsigned m[MAGIC_LEN];
 
+	cur_ver = version();
+	lib_ver = sodium_version_string();
 	memset(params, 0, sizeof(params));
 
 	/* Magic. */
@@ -363,17 +346,20 @@ header_read(struct ankh *a)
 	if (fread(params, HEADER_PARAM_SIZE, 1, a->fin) != 1)
 		errx(1, "failure to read header parameters");
 
-	if ((n = sscanf(params, "%d %d %d %d %llu %ld",
-	    &v[0], &v[1], &v[2], &cmd, &a->opslimit, &a->memlimit)) != 6)
+	if ((n = sscanf(params, "%32s %32s %d %d %llu %ld",
+	    ver, sver, &cmd, &a->algo, &a->opslimit, &a->memlimit)) != 6)
 		errx(1, "invalid number of parameters %d", n);
 
 	/* XXX strict version check. */
-	if (v[0] != MAJ || v[1] != MIN || v[2] != REV)
-		warnx("data is from v%d.%d.%d", v[0], v[1], v[2]);
+	if (strcmp(ver, cur_ver) != 0 || strcmp(sver, lib_ver) != 0)
+		warnx("data generated from v%s (libsodium %s)", ver, sver);
 
 	/* Make sure the file type matches the command we are running. */
 	if (a->cmd != cmd)
 		errx(1, "invalid command for file type %d", cmd);
+
+	if (a->cmd == CMD_SECRET_KEY)
+		set_algo(a);
 
 	return 0;
 }
@@ -381,16 +367,20 @@ header_read(struct ankh *a)
 int
 header_write(struct ankh *a)
 {
+	const char *cur_ver;
+	const char *lib_ver;
 	size_t len;
 	unsigned char params[HEADER_PARAM_SIZE + 1];
 
+	cur_ver = version();
+	lib_ver = sodium_version_string();
 	memset(params, 0, sizeof(params));
 
 	if (fwrite(magic, MAGIC_LEN, 1, a->fout) != 1)
 		errx(1, "failure to write header magic");
 
-	len = snprintf(params, sizeof(params), "%d %d %d %d %llu %ld",
-	    MAJ, MIN, REV, a->cmd, a->opslimit, a->memlimit);
+	len = snprintf(params, sizeof(params), "%s %s %d %d %llu %ld",
+	    cur_ver, lib_ver, a->cmd, a->algo, a->opslimit, a->memlimit);
 	if (len > HEADER_PARAM_SIZE)
 		errx(1, "header params exceed size limit %ld", len);
 
@@ -611,19 +601,11 @@ int
 pubkey_write(struct ankh *a)
 {
 	FILE *fp;
-	char *hex;
 	char id[STRING_MAX];
 	char now[STRING_MAX];
-	size_t hexsize;
 	time_t t;
 
 	memset(id, 0, sizeof(id));
-
-	hexsize = sizeof(a->pubkey) * 2 + 1;
-	if ((hex = malloc(hexsize)) == NULL)
-		err(1, NULL);
-
-	sodium_bin2hex(hex, hexsize, a->pubkey, sizeof(a->pubkey));
 
 	if ((fp = fopen(a->pubfile, "w")) == NULL)
 		err(1, "%s", a->pubfile);
@@ -632,13 +614,13 @@ pubkey_write(struct ankh *a)
 	str_time(now, sizeof(now), t);
 	getid(id, sizeof(id));
 
-	fprintf(fp, "# %s v%s public key\n# %s\n# %s\n",
-	    getprogname(), version(), now, id);
-
-	fprintf(fp, "key: %s\n", hex);
+	fprintf(fp, "# %s public key\n", getprogname());
+	fprintf(fp, "version: %s/%s\n", version(), sodium_version_string());
+	fprintf(fp, "date: %s\n", now);
+	fprintf(fp, "user: %s\n", id);
+	data_write(fp, "key", a->pubkey, sizeof(a->pubkey));
 
 	fclose(fp);
-	free(hex);
 
 	return 0;
 }
@@ -688,7 +670,10 @@ public_key(struct ankh *a)
 	if (pledge("stdio", NULL) == -1)
 		err(1, "pledge");
 
-	cipher(a);
+	if (a->enc)
+		stream_encrypt(a);
+	else
+		stream_decrypt(a);
 
 	return 0;
 }
@@ -730,7 +715,10 @@ sealed_box(struct ankh *a)
 	if (pledge("stdio", NULL) == -1)
 		err(1, "pledge");
 
-	cipher(a);
+	if (a->enc)
+		stream_encrypt(a);
+	else
+		stream_decrypt(a);
 
 	return 0;
 }
@@ -780,6 +768,12 @@ seckey_read(struct ankh *a)
 	fclose(fp);
 
 	/* Get name/value pairs. */
+	name = "algo";
+	if (nvp_find(name, &lines, &np) != 0)
+		errx(1, "missing %s in %s", name, a->secfile);
+	strlcpy(a->algoname, np->value, sizeof(a->algoname));
+	set_algo(a);
+
 	name = "opslimit";
 	if (nvp_find(name, &lines, &np) != 0)
 		errx(1, "missing %s in %s", name, a->secfile);
@@ -839,12 +833,10 @@ int
 seckey_write(struct ankh *a)
 {
 	FILE *fp;
-	char *hex;
 	char id[STRING_MAX];
 	char now[STRING_MAX];
 	mode_t mask;
 	size_t ctlen;
-	size_t hexsize;
 	time_t t;
 	unsigned char *ct;
 	unsigned char key[crypto_secretbox_KEYBYTES];
@@ -869,43 +861,23 @@ seckey_write(struct ankh *a)
 	kdf(key, a->keyfile, salt, a->algo, a->opslimit, a->memlimit, 1);
 
 	/* Encrypt secret key. */
-	crypto_secretbox_easy(ct, a->seckey, sizeof(a->seckey),
-	    nonce, key);
+	crypto_secretbox_easy(ct, a->seckey, sizeof(a->seckey), nonce, key);
 	explicit_bzero(key, sizeof(key));
 
 	/* Write our secret key file. */
 	time(&t);
 	str_time(now, sizeof(now), t);
 	getid(id, sizeof(id));
-	fprintf(fp, "# %s v%s secret key\n# %s\n# %s\n",
-	    getprogname(), version(), now, id);
-
+	fprintf(fp, "# %s secret key\n", getprogname());
+	fprintf(fp, "version: %s/%s\n", version(), sodium_version_string());
+	fprintf(fp, "date: %s\n", now);
+	fprintf(fp, "user: %s\n", id);
 	fprintf(fp, "opslimit: %llu\n", a->opslimit);
 	fprintf(fp, "memlimit: %ld\n", a->memlimit);
-
-	/* Salt. */
-	hexsize = sizeof(salt) * 2 + 1;
-	if ((hex = malloc(hexsize)) == NULL)
-		err(1, NULL);
-	sodium_bin2hex(hex, hexsize, salt, sizeof(salt));
-	fprintf(fp, "salt: %s\n", hex);
-	free(hex);
-
-	/* Nonce. */
-	hexsize = sizeof(nonce) * 2 + 1;
-	if ((hex = malloc(hexsize)) == NULL)
-		err(1, NULL);
-	sodium_bin2hex(hex, hexsize, nonce, sizeof(nonce));
-	fprintf(fp, "nonce: %s\n", hex);
-	free(hex);
-
-	/* Ciphertext. */
-	hexsize = ctlen * 2 + 1;
-	if ((hex = malloc(hexsize)) == NULL)
-		err(1, NULL);
-	sodium_bin2hex(hex, hexsize, ct, ctlen);
-	fprintf(fp, "encrypted key: %s\n", hex);
-	free(hex);
+	fprintf(fp, "algo: %s\n", a->algoname);
+	data_write(fp, "salt", salt, sizeof(salt));
+	data_write(fp, "nonce", nonce, sizeof(nonce));
+	data_write(fp, "encrypted key", ct, ctlen);
 
 	free(ct);
 	fclose(fp);
@@ -937,7 +909,10 @@ secret_key(struct ankh *a)
 	if (pledge("stdio", NULL) == -1)
 		err(1, "pledge");
 
-	cipher(a);
+	if (a->enc)
+		stream_encrypt(a);
+	else
+		stream_decrypt(a);
 
 	return 0;
 }
@@ -945,14 +920,37 @@ secret_key(struct ankh *a)
 void
 set_algo(struct ankh *a)
 {
-	if (a->algoname[0] == '\0')
-		a->algo = crypto_pwhash_ALG_DEFAULT;
-	else if (strcmp(a->algoname, "argon2i") == 0)
-		a->algo = crypto_pwhash_ALG_ARGON2I13;
-	else if (strcmp(a->algoname, "argon2id") == 0)
-		a->algo = crypto_pwhash_ALG_ARGON2ID13;
-	else
-		errx(1, "undefined algo %s", a->algoname);
+	int i;
+	int max;
+	struct kdfinfo *ki;
+
+	max = sizeof(kdflist) / sizeof(struct kdfinfo);
+	for (i = 0; i < max; i++) {
+		ki = &kdflist[i];
+		if (strcmp(a->algoname, ki->name) == 0) {
+			a->algo = ki->algo;
+			return;
+		}
+	}
+	errx(1, "undefined algo name %s", a->algoname);
+}
+
+void
+set_algoname(struct ankh *a)
+{
+	int i;
+	int max;
+	struct kdfinfo *ki;
+
+	max = sizeof(kdflist) / sizeof(struct kdfinfo);
+	for (i = 0; i < max; i++) {
+		ki = &kdflist[i];
+		if (a->algo == ki->algo) {
+			strlcpy(a->algoname, ki->name, sizeof(a->algoname));
+			return;
+		}
+	}
+	errx(1, "undefined algo value %d", a->algo);
 }
 
 /*
@@ -994,6 +992,106 @@ str_time(char *str, size_t size, time_t t)
 	strftime(str, size - 1, "%Y-%m-%dT%H:%M:%S%z", &tm);
 
 	return str;
+}
+
+int
+stream_decrypt(struct ankh *a)
+{
+	crypto_secretstream_xchacha20poly1305_state st;
+	int eof;
+	size_t inlen;
+	size_t outlen;
+	size_t rlen;
+	unsigned char *in;
+	unsigned char *out;
+	unsigned char hdr[crypto_secretstream_xchacha20poly1305_HEADERBYTES];
+	unsigned char tag;
+	unsigned long long wlen;
+
+	memset(&hdr, 0, sizeof(hdr));
+	memset(&st, 0, sizeof(st));
+
+	inlen = BUFSIZE + crypto_secretstream_xchacha20poly1305_ABYTES;
+	if ((in = malloc(inlen)) == NULL)
+		err(1, NULL);
+	outlen = BUFSIZE;
+	if ((out = malloc(outlen)) == NULL)
+		err(1, NULL);
+
+	fread(hdr, sizeof(hdr), 1, a->fin);
+	if (ferror(a->fin))
+		errx(1, "error reading from input stream");
+
+	if (crypto_secretstream_xchacha20poly1305_init_pull(&st,
+	    hdr, a->key) != 0)
+		errx(1, "invalid header");
+
+	do {
+		rlen = fread(in, 1, inlen, a->fin);
+		if (ferror(a->fin))
+			errx(1, "error reading from input stream");
+		eof = feof(a->fin);
+		if (crypto_secretstream_xchacha20poly1305_pull(&st, out, &wlen,
+		    &tag, in, rlen, NULL, 0) != 0)
+			errx(1, "invalid data");
+		if (tag == crypto_secretstream_xchacha20poly1305_TAG_FINAL
+		    && !eof)
+			errx(1, "premature end of file reached");
+		if (fwrite(out, wlen, 1, a->fout) == 0)
+			errx(1, "error writing to output stream");
+	} while (!eof);
+
+	freezero(out, outlen);
+	freezero(in, inlen);
+
+	return 0;
+}
+
+int
+stream_encrypt(struct ankh *a)
+{
+	crypto_secretstream_xchacha20poly1305_state st;
+	int eof;
+	size_t inlen;
+	size_t outlen;
+	size_t rlen;
+	unsigned long long wlen;
+	unsigned char *in;
+	unsigned char *out;
+	unsigned char hdr[crypto_secretstream_xchacha20poly1305_HEADERBYTES];
+	unsigned char tag;
+
+	memset(&hdr, 0, sizeof(hdr));
+	memset(&st, 0, sizeof(st));
+
+	inlen = BUFSIZE;
+	if ((in = malloc(inlen)) == NULL)
+		err(1, NULL);
+	outlen = BUFSIZE + crypto_secretstream_xchacha20poly1305_ABYTES;
+	if ((out = malloc(outlen)) == NULL)
+		err(1, NULL);
+
+	crypto_secretstream_xchacha20poly1305_init_push(&st, hdr, a->key);
+
+	if (fwrite(hdr, sizeof(hdr), 1, a->fout) == 0)
+		errx(1, "error writing to output stream");
+
+	do {
+		rlen = fread(in, 1, inlen, a->fin);
+		if (ferror(a->fin))
+			errx(1, "error reading from input stream");
+		eof = feof(a->fin);
+		tag = eof ? crypto_secretstream_xchacha20poly1305_TAG_FINAL : 0;
+		crypto_secretstream_xchacha20poly1305_push(&st, out, &wlen,
+		    in, rlen, NULL, 0, tag);
+		if (fwrite(out, wlen, 1, a->fout) == 0)
+			errx(1, "error writing to output stream");
+	} while (!eof);
+
+	freezero(out, outlen);
+	freezero(in, inlen);
+
+	return 0;
 }
 
 const char *

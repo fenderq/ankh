@@ -1,0 +1,3 @@
+Update cipher func to use libsodium secret key stream
+Return error values for handler
+Header info (keys and data files)

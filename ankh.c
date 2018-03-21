@@ -616,8 +616,8 @@ pubkey_write(struct ankh *a)
 
 	fprintf(fp, "# %s public key\n", getprogname());
 	fprintf(fp, "date: %s\n", now);
-	fprintf(fp, "version: %s (libsodium %s)\n", version(),
-	    sodium_version_string());
+	fprintf(fp, "version: %s\n", version());
+	fprintf(fp, "libsodium: %s\n", sodium_version_string());
 	fprintf(fp, "user: %s\n", id);
 	data_write(fp, "key", a->pubkey, sizeof(a->pubkey));
 
@@ -871,8 +871,8 @@ seckey_write(struct ankh *a)
 	getid(id, sizeof(id));
 	fprintf(fp, "# %s secret key\n", getprogname());
 	fprintf(fp, "date: %s\n", now);
-	fprintf(fp, "version: %s (libsodium %s)\n", version(),
-	    sodium_version_string());
+	fprintf(fp, "version: %s\n", version());
+	fprintf(fp, "libsodium: %s\n", sodium_version_string());
 	fprintf(fp, "user: %s\n", id);
 	fprintf(fp, "algo: %s\n", a->algoname);
 	fprintf(fp, "opslimit: %llu\n", a->opslimit);

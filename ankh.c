@@ -89,6 +89,11 @@ extern char *optarg;
 int verbose;
 struct ankh *adp;
 
+unsigned char v2[] = {
+	0x7e, 0x82, 0x72, 0x2d, 0xfc, 0xac, 0xf3, 0x05,
+	0x99, 0x7f, 0xee, 0x77, 0x34, 0x15, 0x7f, 0x5a
+};
+
 unsigned char magic[] = {
 	0xa4, 0xfb, 0x24, 0x78, 0xc1, 0x08, 0x26, 0x10,
 	0x7e, 0x5c, 0xa3, 0x39, 0x9f, 0x36, 0x36, 0x99
@@ -341,6 +346,9 @@ header_read(struct ankh *a)
 	/* Magic. */
 	if (fread(m, MAGIC_LEN, 1, a->fin) != 1)
 		errx(1, "failure to read header magic");
+
+	if (memcmp(m, v2, MAGIC_LEN) == 0)
+		errx(1, "deprecated v2.x.x %s file", getprogname());
 
 	if (memcmp(m, magic, MAGIC_LEN) != 0)
 		errx(1, "invalid file");

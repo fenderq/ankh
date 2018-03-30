@@ -348,7 +348,7 @@ header_read(struct ankh *a)
 		errx(1, "failure to read header magic");
 
 	if (memcmp(m, v2, MAGIC_LEN) == 0)
-		errx(1, "deprecated v2.x.x file");
+		errx(1, "deprecated v2.x.x file detected, use older version");
 
 	if (memcmp(m, magic, MAGIC_LEN) != 0)
 		errx(1, "invalid file");

@@ -58,6 +58,7 @@ struct ankh {
 	char pubfile[PATH_MAX];
 	char secfile[PATH_MAX];
 	enum command cmd;
+	int (*cipher_func)(struct ankh *);
 	int algo;
 	int enc;
 	int mode;
@@ -141,6 +142,7 @@ main(int argc, char *argv[])
 
 	adp->cmd = CMD_UNDEFINED;
 	adp->enc = 1;
+	adp->cipher_func = stream_encrypt;
 	adp->fin = stdin;
 	adp->fout = stdout;
 	adp->algo = crypto_pwhash_ALG_DEFAULT;
@@ -183,6 +185,7 @@ main(int argc, char *argv[])
 			set_algo(adp);
 			break;
 		case 'd':
+			adp->cipher_func = stream_decrypt;
 			adp->enc = 0;
 			break;
 		case 'k':
@@ -671,10 +674,7 @@ public_key(struct ankh *a)
 	if (pledge("stdio", NULL) == -1)
 		err(1, "pledge");
 
-	if (a->enc)
-		stream_encrypt(a);
-	else
-		stream_decrypt(a);
+	a->cipher_func(a);
 
 	return 0;
 }
@@ -716,10 +716,7 @@ sealed_box(struct ankh *a)
 	if (pledge("stdio", NULL) == -1)
 		err(1, "pledge");
 
-	if (a->enc)
-		stream_encrypt(a);
-	else
-		stream_decrypt(a);
+	a->cipher_func(a);
 
 	return 0;
 }
@@ -911,10 +908,7 @@ secret_key(struct ankh *a)
 	if (pledge("stdio", NULL) == -1)
 		err(1, "pledge");
 
-	if (a->enc)
-		stream_encrypt(a);
-	else
-		stream_decrypt(a);
+	a->cipher_func(a);
 
 	return 0;
 }

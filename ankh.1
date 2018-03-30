@@ -98,14 +98,14 @@ of key derivation.
 This is a numerical value from one of the following:
 .Bl -enum
 .It
-Interactive is the fastest mode.
-This requires 32MB of dedicated RAM.
+For interactive, online operations.
+This requires 64 MiB of dedicated RAM.
 .It
-Moderate takes about 0.7 seconds and requires 128MB of dedicated RAM.
 This is the default mode.
+This requires 256 MiB of dedicated RAM.
 .It
-Sensitive is for highly sensitive data and non-interactive operations.
-This can take about 3.5 seconds and requires 512MB of dedicated RAM.
+For highly sensitive data and non-interactive operations.
+This requires 1024 MiB of dedicated RAM.
 .El
 .It Fl p Ar pubkey
 Public key file.
@@ -135,9 +135,3 @@ Decrypt a file from Alice to Bob using public key:
 .Dl $ ankh -P -p alice.pub -s bob.sec < ciphertext.file > plaintext.file.2
 .Sh AUTHORS
 .An Steven Roberts <sroberts@fenderq.com>
-.Sh CAVEATS
-libsodium changed the default key derivation function from argon2i to argon2id
-in 1.0.15.
-Use the
-.Ar algo
-argument to select the older key derivation function.

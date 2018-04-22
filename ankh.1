@@ -114,25 +114,32 @@ Secret key file.
 .El
 .Sh EXAMPLES
 Encrypt a file using a passphrase:
-.Dl $ ankh -S < plaintext.file > ciphertext.file
+.Pp
+.Dl $ ankh -S < plaintext > ciphertext
 .Pp
 Decrypt a file using a passphrase:
-.Dl $ ankh -S -d < ciphertext.file > plaintext.file.2
+.Pp
+.Dl $ ankh -S -d < ciphertext > plaintext
 .Pp
 Generate a new key pair:
+.Pp
 .Dl $ ankh -G -p alice.pub -s alice.sec
 .Pp
 Encrypt a file using sealed box:
-.Dl $ ankh -B -p alice.pub < plaintext.file > ciphertext.file
+.Pp
+.Dl $ ankh -B -p alice.pub < plaintext > ciphertext
 .Pp
 Decrypt a file using sealed box:
-.Dl $ ankh -B -p alice.pub -s alice.sec < ciphertext.file > plaintext.file.2
+.Pp
+.Dl $ ankh -B -p alice.pub -s alice.sec < ciphertext > plaintext
 .Pp
 Encrypt a file from Alice to Bob using public key:
-.Dl $ ankh -P -p bob.pub -s alice.sec < plaintext.file > ciphertext.file
+.Pp
+.Dl $ ankh -P -p bob.pub -s alice.sec < plaintext > ciphertext
 .Pp
 Decrypt a file from Alice to Bob using public key:
-.Dl $ ankh -P -p alice.pub -s bob.sec < ciphertext.file > plaintext.file.2
+.Pp
+.Dl $ ankh -P -p alice.pub -s bob.sec < ciphertext > plaintext
 .Sh AUTHORS
 .An Steven Roberts <sroberts@fenderq.com>
 .Sh CAVEATS

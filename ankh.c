@@ -334,7 +334,7 @@ header_read(struct ankh *a)
 	char ver[STRING_MAX];
 	const char *cur_ver;
 	const char *lib_ver;
-	int cmd;
+	enum command cmd;
 	int n;
 	unsigned char params[HEADER_PARAM_SIZE + 1];
 	unsigned m[MAGIC_LEN];
